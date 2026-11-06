@@ -21,6 +21,7 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Renderable;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.TagKey;
@@ -158,6 +159,11 @@ public class CleanerScreen extends Screen {
     private int typeScroll;
     private Button typeButton;
     /** 范围编辑器：多组「类型 + 搭配」（替换原来的单范围 + 单搭配） */
+    /** 列表滑条拖动状态 */
+    private boolean draggingListBar;
+    private boolean draggingRuleBar;
+    private boolean draggingPartnerBar;
+
     private boolean rangeEditorOpen;
     /** -1 = 编辑属性台模板；>=0 = 编辑某条规则 */
     private int rangeEditorFor = -1;
@@ -172,6 +178,8 @@ public class CleanerScreen extends Screen {
     /** 搭配（第二个范围）选择弹窗 */
     private boolean partnerPickerOpen;
     private int partnerScroll;
+    /** 0 = 类别(#标签)  1 = 物品 */
+    private int partnerTab;
     private int partnerForRule = -1;
     private EditBox partnerSearch;
     private String partnerSearchText = "";
@@ -389,6 +397,15 @@ public class CleanerScreen extends Screen {
         }).bounds(listX() + 132, fy, 66, 18).build());
 
         int rx = panelX() + panelW() - 8;
+        addRenderableWidget(Button.builder(Component.literal("§e同步"), b -> {
+            if (!Cleaner.hasPendingChanges()) {
+                setStatus("规则已经是最新的");
+                return;
+            }
+            Cleaner.applyPending();
+            setStatus("正在同步规则…");
+        }).bounds(rx - 49 * 5 - 16, fy, 46, 18).build());
+
         addRenderableWidget(Button.builder(Component.literal("导出"), b -> {
             Minecraft.getInstance().keyboardHandler.setClipboard(Rules.exportJson());
             setStatus("规则已复制到剪贴板");
@@ -733,14 +750,21 @@ public class CleanerScreen extends Screen {
     public void render(GuiGraphics gg, int mouseX, int mouseY, float partialTick) {
         this.renderBackground(gg);
         ensureEntries();
-        drawPanel(gg);
-        drawCandidateList(gg, mouseX, mouseY);
-        drawPropPanel(gg, mouseX, mouseY);
-        drawRuleList(gg, mouseX, mouseY);
-        drawFooter(gg);
 
-        for (Renderable renderable : this.renderables) {
-            renderable.render(gg, mouseX, mouseY, partialTick);
+        // 弹窗打开时整个主界面都不画：
+        // 属性台的「隐藏/删除」是直接 drawString 的，不在 widget 列表里，光靠遮罩挡不住。
+        boolean modal = settingsOpen || ruleEditOpen || rangeEditorOpen
+                || partnerPickerOpen || typePickerOpen;
+        if (!modal) {
+            drawPanel(gg);
+            drawCandidateList(gg, mouseX, mouseY);
+            drawPropPanel(gg, mouseX, mouseY);
+            drawRuleList(gg, mouseX, mouseY);
+            drawFooter(gg);
+
+            for (Renderable renderable : this.renderables) {
+                renderable.render(gg, mouseX, mouseY, partialTick);
+            }
         }
 
         if (settingsOpen) {
@@ -771,7 +795,14 @@ public class CleanerScreen extends Screen {
 
         String counter = "规则 " + Rules.enabledCount() + "/" + Rules.size();
         int cw = this.font.width(counter);
-        gg.drawString(this.font, counter, x + w - 10 - cw, y + 6, COLOR_DIM, false);
+        int cx = x + w - 10 - cw;
+        gg.drawString(this.font, counter, cx, y + 6, COLOR_DIM, false);
+
+        if (Cleaner.hasPendingChanges()) {
+            String warn = Cleaner.isSyncing() ? "同步中" : "未同步";
+            int ww = this.font.width(warn);
+            gg.drawString(this.font, warn, cx - 10 - ww, y + 6, COLOR_ACCENT, false);
+        }
     }
 
     private void drawCandidateList(GuiGraphics gg, int mouseX, int mouseY) {
@@ -1089,6 +1120,57 @@ public class CleanerScreen extends Screen {
         gg.drawCenteredString(this.font, label, x + w / 2, y + 3, selected ? 0xFFFFFFFF : COLOR_DIM);
     }
 
+    private void scrollListFromMouse(double mouseY) {
+        int rows = visibleRows();
+        int maxScroll = Math.max(0, filtered.size() - rows);
+        if (maxScroll <= 0) return;
+        float ratio = (float) ((mouseY - listY()) / (double) Math.max(1, listH()));
+        listScroll = Math.max(0, Math.min(maxScroll, Math.round(ratio * maxScroll)));
+    }
+
+    private void scrollRuleFromMouse(double mouseY) {
+        int rows = visibleRuleRows();
+        int maxScroll = Math.max(0, Rules.size() - rows);
+        if (maxScroll <= 0) return;
+        float ratio = (float) ((mouseY - listY()) / (double) Math.max(1, listH()));
+        ruleScroll = Math.max(0, Math.min(maxScroll, Math.round(ratio * maxScroll)));
+    }
+
+    private void scrollPartnerFromMouse(double mouseY) {
+        int visible = Math.max(1, (pickerH() - 44) / PARTNER_ROW_H);
+        List<PartnerRow> rows = filteredPartnerRows();
+        int maxScroll = Math.max(0, rows.size() - visible);
+        if (maxScroll <= 0) return;
+        int listTop = pickerY() + 38;
+        float ratio = (float) ((mouseY - listTop) / (double) Math.max(1, visible * PARTNER_ROW_H));
+        partnerScroll = Math.max(0, Math.min(maxScroll, Math.round(ratio * maxScroll)));
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (draggingListBar) {
+            scrollListFromMouse(mouseY);
+            return true;
+        }
+        if (draggingRuleBar) {
+            scrollRuleFromMouse(mouseY);
+            return true;
+        }
+        if (draggingPartnerBar) {
+            scrollPartnerFromMouse(mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        draggingListBar = false;
+        draggingRuleBar = false;
+        draggingPartnerBar = false;
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
     private static boolean inRect(int mx, int my, int x, int y, int w, int h) {
         return mx >= x && mx <= x + w && my >= y && my <= y + h;
     }
@@ -1215,13 +1297,44 @@ public class CleanerScreen extends Screen {
         return rows;
     }
 
+    /** #标签 -> 物品列表缓存 */
+    private static final Map<String, List<Item>> TAG_ITEMS = new HashMap<>();
+
+    private static List<Item> tagItems(String tagPath) {
+        List<Item> cached = TAG_ITEMS.get(tagPath);
+        if (cached != null) return cached;
+        List<Item> list = new ArrayList<>();
+        try {
+            ResourceLocation rl = ResourceLocation.tryParse(tagPath);
+            if (rl != null) {
+                var holders = BuiltInRegistries.ITEM.getTag(TagKey.create(Registries.ITEM, rl));
+                if (holders.isPresent()) {
+                    for (var holder : holders.get()) {
+                        Item item = holder.value();
+                        if (item != Items.AIR) list.add(item);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        TAG_ITEMS.put(tagPath, list);
+        return list;
+    }
+
     private List<PartnerRow> filteredPartnerRows() {
-        List<PartnerRow> all = partnerRows();
-        String q = partnerSearchText == null ? "" : partnerSearchText.trim().toLowerCase(Locale.ROOT);
-        if (q.isEmpty()) return all;
         List<PartnerRow> out = new ArrayList<>();
-        for (PartnerRow row : all) {
-            if (row.value().isEmpty()
+        String q = partnerSearchText == null ? "" : partnerSearchText.trim().toLowerCase(Locale.ROOT);
+        for (PartnerRow row : partnerRows()) {
+            // 「不限」永远在
+            if (row.value().isEmpty()) {
+                out.add(row);
+                continue;
+            }
+            boolean tag = row.value().startsWith("#");
+            if (partnerTab == 0 && !tag) continue;
+            if (partnerTab == 1 && tag) continue;
+
+            if (q.isEmpty()
                     || row.label().toLowerCase(Locale.ROOT).contains(q)
                     || row.sub().toLowerCase(Locale.ROOT).contains(q)) {
                 out.add(row);
@@ -1240,7 +1353,19 @@ public class CleanerScreen extends Screen {
         gg.fill(x, y, x + w, y + h, 0xF51C1C26);
         gg.renderOutline(x, y, w, h, COLOR_EDGE);
 
-        gg.drawString(this.font, "搭配（另一个输入）", x + 6, y + 5, COLOR_ACCENT, false);
+        gg.drawString(this.font, "搭配", x + 6, y + 5, COLOR_ACCENT, false);
+        // 两个页签：类别 / 物品
+        int tabY = y + 3;
+        int tabW = 56;
+        int tab1X = x + 44;
+        int tab2X = tab1X + tabW + 4;
+        gg.fill(tab1X, tabY, tab1X + tabW, tabY + 14, partnerTab == 0 ? 0xFF3A5A8A : 0x30FFFFFF);
+        gg.drawCenteredString(this.font, "类别", tab1X + tabW / 2, tabY + 3,
+                partnerTab == 0 ? 0xFFFFFFFF : COLOR_DIM);
+        gg.fill(tab2X, tabY, tab2X + tabW, tabY + 14, partnerTab == 1 ? 0xFF3A5A8A : 0x30FFFFFF);
+        gg.drawCenteredString(this.font, "物品", tab2X + tabW / 2, tabY + 3,
+                partnerTab == 1 ? 0xFFFFFFFF : COLOR_DIM);
+
         gg.fill(x + 4, y + 17, x + w - 4, y + 18, COLOR_EDGE);
         gg.drawString(this.font, "点「不限」取消", x + w - 62, y + 5, COLOR_FAINT, false);
 
@@ -1251,6 +1376,7 @@ public class CleanerScreen extends Screen {
         partnerScroll = Math.max(0, Math.min(maxScroll, partnerScroll));
 
         String current = currentPartnerValue();
+        PartnerRow hoverRow = null;
 
         gg.enableScissor(x + 2, listY, x + w - 2, listY + visible * PARTNER_ROW_H);
         for (int i = 0; i < visible; i++) {
@@ -1261,6 +1387,7 @@ public class CleanerScreen extends Screen {
             boolean hovered = mouseX >= x + 2 && mouseX <= x + w - 2 && mouseY >= ry && mouseY < ry + PARTNER_ROW_H;
             boolean selected = row.value().equals(current);
             if (hovered) {
+                hoverRow = row;
                 gg.fill(x + 2, ry, x + w - 2, ry + PARTNER_ROW_H, COLOR_HOVER);
             } else if (selected) {
                 gg.fill(x + 2, ry, x + w - 2, ry + PARTNER_ROW_H, 0x334EA1FF);
@@ -1276,6 +1403,27 @@ public class CleanerScreen extends Screen {
         }
         gg.disableScissor();
 
+        // 悬浮 #标签：预览里面有哪些物品（每 2 秒翻页）
+        if (hoverRow != null && hoverRow.value().startsWith("#")) {
+            String tagPath = hoverRow.value().substring(1);
+            List<Item> members = tagItems(tagPath);
+            List<Component> lines = new ArrayList<>();
+            lines.add(Component.literal("§e#" + tagPath + " §7(" + members.size() + " 项)"));
+            int pageSize = 10;
+            int pages = Math.max(1, (members.size() + pageSize - 1) / pageSize);
+            int page = (int) ((System.currentTimeMillis() / 2000L) % pages);
+            for (int i = page * pageSize; i < Math.min(members.size(), (page + 1) * pageSize); i++) {
+                lines.add(Component.literal("§f" + new ItemStack(members.get(i)).getHoverName().getString()));
+            }
+            if (pages > 1) {
+                lines.add(Component.literal("§8第 " + (page + 1) + "/" + pages + " 页 · 自动轮播"));
+            }
+            if (members.isEmpty()) {
+                lines.add(Component.literal("§8（这个标签里没有物品）"));
+            }
+            gg.renderComponentTooltip(this.font, lines, mouseX, mouseY);
+        }
+
         if (maxScroll > 0) {
             int barH = Math.max(10, (int) ((float) visible / rows.size() * (visible * PARTNER_ROW_H)));
             int barY = listY + (int) ((float) partnerScroll / maxScroll
@@ -1290,6 +1438,31 @@ public class CleanerScreen extends Screen {
             closePartnerPicker();
             return true;
         }
+        // 页签切换
+        int tabY = y + 3;
+        int tabW = 56;
+        int tab1X = x + 44;
+        int tab2X = tab1X + tabW + 4;
+        if (mouseY >= tabY && mouseY <= tabY + 14) {
+            if (mouseX >= tab1X && mouseX <= tab1X + tabW) {
+                partnerTab = 0;
+                partnerScroll = 0;
+                return true;
+            }
+            if (mouseX >= tab2X && mouseX <= tab2X + tabW) {
+                partnerTab = 1;
+                partnerScroll = 0;
+                return true;
+            }
+        }
+
+        // 右侧滑条：点住拖
+        if (mouseX >= x + w - 5 && mouseX <= x + w && mouseY >= y + 38 && mouseY <= y + h - 6) {
+            draggingPartnerBar = true;
+            scrollPartnerFromMouse(mouseY);
+            return true;
+        }
+
         int listY = y + 38;
         if (mouseY >= listY) {
             int idx = partnerScroll + (int) ((mouseY - listY) / PARTNER_ROW_H);
@@ -1385,10 +1558,11 @@ public class CleanerScreen extends Screen {
         for (Rule.Range range : currentRanges()) {
             total += RANGE_ROW_H;
             for (java.util.List<String> group : range.groups()) {
-                // 框内：成员行 + 「添加（与）」行 + 上下边框
-                total += group.size() * RANGE_PARTNER_H + RANGE_PARTNER_H + 4;
+                if (group.isEmpty()) continue;
+                // 成员 + 「添加（与）」+ 上下边框
+                total += group.size() * RANGE_PARTNER_H + RANGE_PARTNER_H + 6;
             }
-            total += RANGE_PARTNER_H + RANGE_GAP; // 框外「添加（或）」
+            total += RANGE_PARTNER_H + RANGE_GAP; // 末尾「添加（或）」
         }
         return total;
     }
@@ -1404,6 +1578,7 @@ public class CleanerScreen extends Screen {
     private void openPartnerPickerForRange(int rangeIndex, int groupIndex) {
         rangePickerIndex = rangeIndex;
         partnerTargetGroup = groupIndex;
+        partnerTab = 0;
         if (partnerPickerOpen) closePartnerPicker();
         partnerPickerOpen = true;
         partnerScroll = 0;
@@ -1459,11 +1634,15 @@ public class CleanerScreen extends Screen {
                 rangeHits.add(new RangeHit(x + w - 18, rowTop, 16, RANGE_ROW_H, "delRange", i, -1, -1));
             }
 
-            // ---- 每个「与」组一个框：框内成员 + 「添加（与）」
+            // ---- 每个「与」组一个框：成员 + 框内「添加（与）」，空组不显示
             int py = rowTop + RANGE_ROW_H;
             List<List<String>> groups = range.groups();
+            boolean anyGroup = false;
             for (int gi = 0; gi < groups.size(); gi++) {
                 List<String> group = groups.get(gi);
+                if (group.isEmpty()) continue;
+                anyGroup = true;
+
                 int boxTop = py;
                 int boxH = group.size() * RANGE_PARTNER_H + RANGE_PARTNER_H + 4;
                 gg.renderOutline(x + 20, boxTop, w - 30, boxH, 0xFF4A5670);
@@ -1483,6 +1662,7 @@ public class CleanerScreen extends Screen {
                     iy += RANGE_PARTNER_H;
                 }
 
+                // 框内「添加（与）」：加到本组
                 boolean hoverAnd = mouseX >= x + 22 && mouseX <= x + w - 6
                         && mouseY >= iy && mouseY < iy + RANGE_PARTNER_H;
                 if (hoverAnd) gg.fill(x + 22, iy, x + w - 6, iy + RANGE_PARTNER_H, COLOR_HOVER);
@@ -1493,14 +1673,32 @@ public class CleanerScreen extends Screen {
                 py = boxTop + boxH + 2;
             }
 
-            // ---- 框外「或」：单独成立一条
-            boolean hoverOr = mouseX >= x + 22 && mouseX <= x + w - 6
-                    && mouseY >= py && mouseY < py + RANGE_PARTNER_H;
-            if (hoverOr) gg.fill(x + 22, py, x + w - 6, py + RANGE_PARTNER_H, COLOR_HOVER);
-            gg.drawString(this.font, "+ 添加（或）", x + 26, py + 1, COLOR_ACCENT, false);
-            rangeHits.add(new RangeHit(x + 22, py, w - 30, RANGE_PARTNER_H, "addOr", i, -1, -1));
+            // ---- 有组时末尾只有「或」；空范围时并排「与 / 或」
+            if (anyGroup) {
+                boolean hoverOr = mouseX >= x + 22 && mouseX <= x + w - 6
+                        && mouseY >= py && mouseY < py + RANGE_PARTNER_H;
+                if (hoverOr) gg.fill(x + 22, py, x + w - 6, py + RANGE_PARTNER_H, COLOR_HOVER);
+                gg.drawString(this.font, "+ 添加（或）", x + 26, py + 1, COLOR_ACCENT, false);
+                rangeHits.add(new RangeHit(x + 22, py, w - 30, RANGE_PARTNER_H, "addOr", i, -1, -1));
+            } else {
+                int bw = Math.max(40, (w - 44) / 2);
+                boolean hoverAnd = mouseX >= x + 22 && mouseX <= x + 22 + bw
+                        && mouseY >= py && mouseY < py + RANGE_PARTNER_H;
+                gg.fill(x + 22, py, x + 22 + bw, py + RANGE_PARTNER_H,
+                        hoverAnd ? 0x66FFFFFF : 0x30FFFFFF);
+                gg.drawString(this.font, "+ 添加（与）", x + 26, py + 1, COLOR_INFO, false);
+                rangeHits.add(new RangeHit(x + 22, py, bw, RANGE_PARTNER_H, "addAnd", i, -1, -1));
 
-            cy = py + RANGE_PARTNER_H + RANGE_GAP;
+                boolean hoverOr = mouseX >= x + 26 + bw && mouseX <= x + 26 + bw * 2
+                        && mouseY >= py && mouseY < py + RANGE_PARTNER_H;
+                gg.fill(x + 26 + bw, py, x + 26 + bw * 2, py + RANGE_PARTNER_H,
+                        hoverOr ? 0x66FFFFFF : 0x30FFFFFF);
+                gg.drawString(this.font, "+ 添加（或）", x + 30 + bw, py + 1, COLOR_ACCENT, false);
+                rangeHits.add(new RangeHit(x + 26 + bw, py, bw, RANGE_PARTNER_H, "addOr", i, -1, -1));
+            }
+            py += RANGE_PARTNER_H;
+
+            cy = py + RANGE_GAP;
         }
         gg.disableScissor();
 
@@ -2335,6 +2533,14 @@ public class CleanerScreen extends Screen {
             return true;
         }
 
+        // 左栏滑条：点住可以直接拖
+        if (mouseX >= listX() + listW() - 5 && mouseX <= listX() + listW()
+                && mouseY >= listY() && mouseY <= listY() + listH()) {
+            draggingListBar = true;
+            scrollListFromMouse(mouseY);
+            return true;
+        }
+
         // 左栏候选条目
         if (mouseX >= listX() && mouseX <= listX() + listW()
                 && mouseY >= listY() && mouseY <= listY() + listH()) {
@@ -2345,7 +2551,15 @@ public class CleanerScreen extends Screen {
             }
         }
 
-        // 右栏规则行：行尾 14px 内 = 删除，其他位置 = 打开编辑弹窗
+        // 右栏滑条
+        if (mouseX >= ruleX() + ruleW() - 5 && mouseX <= ruleX() + ruleW()
+                && mouseY >= listY() && mouseY <= listY() + listH()) {
+            draggingRuleBar = true;
+            scrollRuleFromMouse(mouseY);
+            return true;
+        }
+
+        // 右栏规则行
         if (mouseX >= ruleX() && mouseX <= ruleX() + ruleW()
                 && mouseY >= listY() && mouseY <= listY() + listH()) {
             int index = ruleScroll + (int) ((mouseY - listY()) / RULE_ROW_H);
@@ -2393,17 +2607,17 @@ public class CleanerScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
         if (ruleEditOpen) return true;
+        if (partnerPickerOpen) {
+            int visible = Math.max(1, (pickerH() - 44) / PARTNER_ROW_H);
+            int maxScroll = Math.max(0, filteredPartnerRows().size() - visible);
+            partnerScroll = Math.max(0, Math.min(maxScroll, partnerScroll - (int) Math.signum(delta)));
+            return true;
+        }
         if (rangeEditorOpen) {
             int viewH = rangeH() - 48;
             int maxScroll = Math.max(0, rangeContentHeight() - viewH);
             rangeEditorScroll = Math.max(0, Math.min(maxScroll,
                     rangeEditorScroll - (int) Math.signum(delta) * 12));
-            return true;
-        }
-        if (partnerPickerOpen) {
-            int visible = Math.max(1, (pickerH() - 44) / PARTNER_ROW_H);
-            int maxScroll = Math.max(0, filteredPartnerRows().size() - visible);
-            partnerScroll = Math.max(0, Math.min(maxScroll, partnerScroll - (int) Math.signum(delta)));
             return true;
         }
         if (typePickerOpen) {
