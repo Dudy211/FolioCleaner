@@ -1,0 +1,32 @@
+package com.yuneko.jeicleaner;
+
+import mezz.jei.api.IModPlugin;
+import mezz.jei.api.JeiPlugin;
+import mezz.jei.api.runtime.IJeiRuntime;
+import net.minecraft.resources.ResourceLocation;
+
+/**
+ * JEI 插件入口。只用来拿 {@link IJeiRuntime} 和感知重载。
+ */
+@JeiPlugin
+public class JeiCleanerPlugin implements IModPlugin {
+
+    public static final ResourceLocation UID = new ResourceLocation(JeiCleaner.MODID, "main");
+
+    @Override
+    public ResourceLocation getPluginUid() {
+        return UID;
+    }
+
+    @Override
+    public void onRuntimeAvailable(IJeiRuntime runtime) {
+        Cleaner.RUNTIME = runtime;
+        // JEI 刚重建完配方索引，稍等几 tick 让世界里的 RecipeManager 也稳定
+        Cleaner.requestApplyDelayed(2);
+    }
+
+    @Override
+    public void onRuntimeUnavailable() {
+        Cleaner.onRuntimeGone();
+    }
+}
