@@ -22,34 +22,35 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.item.crafting.Recipe;
 import net.minecraft.world.item.crafting.RecipeManager;
 
+import java.util.stream.Stream;
+
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
 
 /**
  * 把规则真正作用到 JEI 上。
  *
- * <p>遍历客户端全部配方，按规则挑出要隐藏的，按 recipe type 分组调
- * {@link IRecipeManager#hideRecipes}；反向操作（删规则）用 unhideRecipes 还原。
- * 另外处理「不是原版 Recipe」的自定义 JEI 配方（奥术铁砧等）。
+ * <p>做法：遍历客户端的全部配方，按规则挑出要隐藏的那些，然后按 recipe type 分组
+ * 调用 {@link IRecipeManager#hideRecipes}。反向操作（删规则）用 {@code unhideRecipes} 还原。
  *
- * <p>所有调用都必须在客户端主线程；{@link #tick()} 由客户端 tick 驱动。
+ * <p>所有调用都必须在客户端主线程；{@link #tick()} 由客户端 tick 事件驱动。
  */
 public final class Cleaner {
 
+    /** JEI 运行时；由 IModPlugin 回调写入 */
     public static volatile IJeiRuntime RUNTIME;
 
     /** 我们自己隐藏过的配方，用来在重算前还原 */
     private static final Map<RecipeType<?>, List<Object>> HIDDEN = new LinkedHashMap<>();
-    /** 自定义 JEI 配方（不是原版 Recipe） */
+    /** 自定义 JEI 配方（不是原版 Recipe，比如 Iron's Spellbooks 的奥术铁砧） */
     private static final Map<RecipeType<?>, List<Object>> HIDDEN_CUSTOM = new LinkedHashMap<>();
     private static final List<ItemStack> HIDDEN_ITEMS = new ArrayList<>();
     private static final List<RecipeType<?>> HIDDEN_CATEGORIES = new ArrayList<>();
 
-    /** 上一次应用的自检报告 */
+    /** 上一次应用的自检报告：每个配方类型命中多少、隐藏后 JEI 里还剩多少 */
     private static final List<String> REPORT = new ArrayList<>();
 
     public static List<String> report() {
@@ -58,6 +59,46 @@ public final class Cleaner {
 
     /** -1 = 没有待办；>0 = 还要等几个 tick */
     private static int countdown = -1;
+
+    /** 最近一次成功应用时的规则版本（用来判断有没有未同步的修改） */
+    private static int appliedRevision = -1;
+
+    // ---- 自定义 JEI 配方的分帧任务（避免一次性卡 10 秒） ----
+    private static boolean customRunning;
+    /** 待判断的 {分类, 配方} */
+    private static List<Object[]> customWork;
+    /** 命中的 {RecipeType, 配方} */
+    private static List<Object[]> customHits;
+    private static int customCursor;
+    private static List<Rule> customRules;
+    private static int customHidden;
+    private static boolean customHidePhase;
+    /** 本次同步开始时刻（用于统计总耗时） */
+    private static long applyStartedAt;
+    /** 布局槽位缓存：改规则后重算时不用重建 layout */
+    private static final Map<Object, IRecipeSlotsView> SLOT_CACHE = new java.util.IdentityHashMap<>();
+
+    /** 同步进度 0..1；不在同步时返回 -1（HUD 用） */
+    public static float progress() {
+        if (!customRunning) return -1f;
+        int total = customWork == null ? 1 : Math.max(1, customWork.size());
+        return Math.min(1f, (float) customCursor / total);
+    }
+
+    /** 预计这次同步会慢吗（有范围限定的物品规则 → 要处理自定义配方） */
+    public static boolean expectSlowSync() {
+        for (Rule rule : Rules.all()) {
+            if (!rule.enabled || !Rule.TYPE_ITEM.equals(rule.type)) continue;
+            for (Rule.Range range : rule.effectiveRanges()) {
+                if (range.hasType()) return true;
+            }
+        }
+        return false;
+    }
+
+    public static boolean isSyncing() {
+        return customRunning;
+    }
 
     private static int lastHiddenRecipes;
     private static int lastHiddenItems;
@@ -87,6 +128,16 @@ public final class Cleaner {
         return RUNTIME != null;
     }
 
+    /** 规则改过但还没应用（GUI 用它显示警告 + 同步按钮） */
+    public static boolean hasPendingChanges() {
+        return Rules.revision() != appliedRevision;
+    }
+
+    /** 手动同步：下一个 tick 应用当前规则 */
+    public static void applyPending() {
+        requestApply();
+    }
+
     /** 规则变了：下一个 tick 重新应用 */
     public static void requestApply() {
         countdown = 1;
@@ -98,6 +149,7 @@ public final class Cleaner {
     }
 
     public static void tick() {
+        tickCustomJob();
         if (countdown <= 0) return;
         countdown--;
         if (countdown == 0) {
@@ -111,9 +163,10 @@ public final class Cleaner {
         }
     }
 
-    /** @return 本次隐藏的配方数；-1 表示还不具备条件（没进世界 / JEI 没就绪） */
+    /** @return 本次隐藏的配方数；-1 表示当前还不具备应用条件（没进世界 / JEI 没就绪） */
     public static synchronized int applyNow() {
         long start = System.nanoTime();
+        applyStartedAt = start;
         IJeiRuntime runtime = RUNTIME;
         Minecraft mc = Minecraft.getInstance();
         if (runtime == null || mc.level == null) {
@@ -130,6 +183,7 @@ public final class Cleaner {
             lastHiddenItems = 0;
             lastApplyOk = true;
             lastApplyMs = (System.nanoTime() - start) / 1_000_000L;
+            appliedRevision = Rules.revision();
             return 0;
         }
 
@@ -161,7 +215,7 @@ public final class Cleaner {
             }
         }
 
-        int customCount = applyCustomRecipes(runtime, Rules.all());
+        startCustomJob(runtime, Rules.all());
 
         // 自检：隐藏之后 JEI 里这个类型还剩多少条（不含 hidden）
         REPORT.clear();
@@ -206,12 +260,15 @@ public final class Cleaner {
             }
         }
 
-        lastHiddenRecipes = recipeCount + customCount;
+        lastHiddenRecipes = recipeCount;
         lastHiddenItems = itemCount;
         lastApplyOk = true;
         lastApplyMs = (System.nanoTime() - start) / 1_000_000L;
-        JeiCleaner.LOGGER.debug("[JEI Cleaner] 已隐藏 {} 条配方（原版 {} + 自定义 {}）/ {} 个物品，用时 {}ms",
-                recipeCount + customCount, recipeCount, customCount, itemCount, lastApplyMs);
+        JeiCleaner.LOGGER.debug("[JEI Cleaner] 原版配方已隐藏 {} 条 / {} 个物品，用时 {}ms；自定义配方异步处理中={}",
+                recipeCount, itemCount, lastApplyMs, customRunning);
+        if (!customRunning) {
+            appliedRevision = Rules.revision();
+        }
         return recipeCount;
     }
 
@@ -243,49 +300,144 @@ public final class Cleaner {
         }
     };
 
-    /** 处理不是原版 Recipe 的自定义 JEI 配方（奥术铁砧等） */
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private static int applyCustomRecipes(IJeiRuntime runtime, List<Rule> rules) {
+    /**
+     * 处理「不是原版 Recipe」的自定义 JEI 配方。
+     *
+     * <p>这类配方（例如 Iron's Spellbooks 的奥术铁砧）由 mod 自己的
+     * {@code IRecipeCategory} 渲染，根本不进原版 {@code RecipeManager}，
+     * 所以 {@code Selector} 看不到它们。
+     *
+     * <p>做法：遍历每个 JEI 分类的<b>全部配方（含已隐藏）</b>，
+     * 先试反射 {@code getRecipeItems()}（快），失败就用 JEI 自己的布局槽位判断（通用）。
+     * 命中后调 {@code hideRecipes} —— 和 JEI 内部隐藏用的是同一条路。
+     */
+    /**
+     * 启动自定义配方的分帧任务。
+     *
+     * <p>按「配方」粒度分帧：每个 tick 最多处理一小批（至少 1 条），
+     * 单条布局构建再慢也不会把一整个分类（几百条）压在同一个 tick 里。
+     */
+    private static void startCustomJob(IJeiRuntime runtime, List<Rule> rules) {
+        customRunning = false;
+        customWork = null;
+        customHits = null;
+        customCursor = 0;
+        customHidden = 0;
+        customHidePhase = false;
+        customRules = rules;
+
         IRecipeManager manager = runtime.getRecipeManager();
-        List<IRecipeCategory<?>> categories;
-        try {
-            categories = manager.createRecipeCategoryLookup().get().toList();
-        } catch (Throwable t) {
-            return 0;
+
+        // 只处理「规则明确指定了范围类型」的分类；不限类型的规则不碰自定义配方。
+        java.util.Set<String> explicitTypes = new java.util.HashSet<>();
+        boolean unrestricted = false;
+        for (Rule rule : rules) {
+            if (rule == null || !rule.enabled || !Rule.TYPE_ITEM.equals(rule.type)) continue;
+            for (Rule.Range range : rule.effectiveRanges()) {
+                if (!range.hasType()) {
+                    unrestricted = true;
+                    continue;
+                }
+                for (String part : range.type.split(",")) {
+                    String v = part.trim();
+                    if (!v.isEmpty()) explicitTypes.add(v);
+                }
+            }
+        }
+        if (explicitTypes.isEmpty()) {
+            if (unrestricted) {
+                JeiCleaner.LOGGER.debug(
+                        "[JEI Cleaner] 不限类型的物品规则不处理自定义 JEI 配方（性能考虑）；给规则加范围即可生效");
+            }
+            return;
         }
 
-        int total = 0;
-        for (IRecipeCategory<?> category : categories) {
-            RecipeType<?> type = category.getRecipeType();
-            List<Object> all;
-            try {
-                all = (List<Object>) manager.createRecipeLookup((RecipeType) type)
-                        .includeHidden().get().toList();
-            } catch (Throwable t) {
-                continue;
-            }
+        List<IRecipeCategory<?>> all;
+        try {
+            all = manager.createRecipeCategoryLookup().get().toList();
+        } catch (Throwable t) {
+            return;
+        }
 
-            List<Object> toHide = new ArrayList<>();
-            for (Object recipe : all) {
-                if (recipe instanceof Recipe<?>) continue; // 原版配方由 Selector 处理
+        List<Object[]> work = new ArrayList<>();
+        for (IRecipeCategory<?> category : all) {
+            if (!explicitTypes.contains(category.getRecipeType().getUid().toString())) continue;
+            try {
+                @SuppressWarnings("rawtypes")
+                List<?> recipes = manager.createRecipeLookup((RecipeType) category.getRecipeType())
+                        .includeHidden().get().toList();
+                for (Object recipe : recipes) {
+                    if (recipe instanceof Recipe<?>) continue; // 原版配方由 Selector 处理
+                    work.add(new Object[]{category, recipe});
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        if (work.isEmpty()) return;
+
+        customWork = work;
+        customHits = new ArrayList<>();
+        customRunning = true;
+        JeiCleaner.LOGGER.debug("[JEI Cleaner] 开始分帧同步自定义配方，共 {} 条", work.size());
+    }
+
+    /** 每个 tick 推进一点：优先保证「至少处理 1 条」，总预算约 6ms */
+    private static void tickCustomJob() {
+        if (!customRunning) return;
+
+        if (!customHidePhase) {
+            long deadline = System.nanoTime() + 6_000_000L;
+            int processed = 0;
+            while (customCursor < customWork.size()) {
+                if (processed >= 1 && System.nanoTime() >= deadline) break;
+                if (processed >= 64) break;
+
+                Object[] item = customWork.get(customCursor++);
+                processed++;
+                IRecipeCategory<?> category = (IRecipeCategory<?>) item[0];
+                Object recipe = item[1];
                 try {
-                    if (shouldHideCustom(category, recipe, type, rules)) toHide.add(recipe);
+                    if (shouldHideCustom(category, recipe, category.getRecipeType(), customRules)) {
+                        customHits.add(new Object[]{category.getRecipeType(), recipe});
+                    }
                 } catch (Throwable ignored) {
                 }
             }
-            if (toHide.isEmpty()) continue;
-
-            try {
-                manager.hideRecipes((RecipeType) type, (Collection) toHide);
-                HIDDEN_CUSTOM.computeIfAbsent(type, k -> new ArrayList<>()).addAll(toHide);
-                total += toHide.size();
-                JeiCleaner.LOGGER.info("[JEI Cleaner] 自定义配方 {} 隐藏 {} 条",
-                        type.getUid(), toHide.size());
-            } catch (Throwable t) {
-                JeiCleaner.LOGGER.warn("[JEI Cleaner] 隐藏自定义配方 {} 失败", type.getUid(), t);
-            }
+            if (customCursor < customWork.size()) return;
+            customHidePhase = true;
         }
-        return total;
+
+        // 收尾：按类型批量隐藏（这一步很快）
+        if (customHits != null && !customHits.isEmpty()) {
+            Map<RecipeType<?>, List<Object>> grouped = new LinkedHashMap<>();
+            for (Object[] hit : customHits) {
+                RecipeType<?> type = (RecipeType<?>) hit[0];
+                grouped.computeIfAbsent(type, k -> new ArrayList<>()).add(hit[1]);
+            }
+            for (Map.Entry<RecipeType<?>, List<Object>> entry : grouped.entrySet()) {
+                try {
+                    @SuppressWarnings("rawtypes")
+                    IRecipeManager manager = RUNTIME.getRecipeManager();
+                    manager.hideRecipes((RecipeType) entry.getKey(), (Collection) entry.getValue());
+                    HIDDEN_CUSTOM.computeIfAbsent(entry.getKey(), k -> new ArrayList<>()).addAll(entry.getValue());
+                    customHidden += entry.getValue().size();
+                    JeiCleaner.LOGGER.info("[JEI Cleaner] 自定义配方 {} 隐藏 {} 条",
+                            entry.getKey().getUid(), entry.getValue().size());
+                } catch (Throwable t) {
+                    JeiCleaner.LOGGER.warn("[JEI Cleaner] 隐藏自定义配方失败", t);
+                }
+            }
+            customHits.clear();
+        }
+
+        customRunning = false;
+        lastHiddenRecipes += customHidden;
+        lastApplyOk = true;
+        appliedRevision = Rules.revision();
+        if (applyStartedAt > 0) {
+            lastApplyMs = (System.nanoTime() - applyStartedAt) / 1_000_000L;
+        }
+        JeiCleaner.LOGGER.info("[JEI Cleaner] 自定义配方同步完成，共隐藏 {} 条", customHidden);
     }
 
     private static boolean shouldHideCustom(IRecipeCategory<?> category, Object recipe,
@@ -293,9 +445,15 @@ public final class Cleaner {
         if (RuntimeFilter.canInspect(recipe)) {
             return !RuntimeFilter.keep(recipe, type);
         }
-        IRecipeLayoutDrawable<?> layout = createLayout(category, recipe);
-        if (layout == null) return false;
-        return matchesSlots(layout.getRecipeSlotsView(), type, rules);
+        IRecipeSlotsView slots = SLOT_CACHE.get(recipe);
+        if (slots == null) {
+            IRecipeLayoutDrawable<?> layout = createLayout(category, recipe);
+            if (layout == null) return false;
+            slots = layout.getRecipeSlotsView();
+            if (SLOT_CACHE.size() > 4000) SLOT_CACHE.clear();
+            SLOT_CACHE.put(recipe, slots);
+        }
+        return matchesSlots(slots, type, rules);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
