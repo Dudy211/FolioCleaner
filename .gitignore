@@ -1,0 +1,23 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.eclipse/
+
+# 运行目录
+run/
+logs/
+
+# 本地依赖（不提交第三方 jar）
+compile_only_depend/
+mixin-libs/
+reference/
+
+# 系统
+.DS_Store
+Thumbs.db
