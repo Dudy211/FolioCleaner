@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.yuneko.jeicleaner.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "jeicleaner.refmap.json",
+  "mixins": [
+    "ItemCombinerMenuMixin"
+  ],
+  "client": [
+    "RecipeManagerInternalMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
