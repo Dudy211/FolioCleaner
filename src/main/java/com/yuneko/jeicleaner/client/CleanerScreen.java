@@ -343,27 +343,45 @@ public class CleanerScreen extends Screen {
 
         int settingsW = 34;
         int settingsX = panelX() + panelW() - 8 - settingsW;
+        int tabEnd = tx + (tabW + tabGap) * 4 - tabGap;
 
-        if (ClientSettings.admin) {
+        // 从右往左排：设置 / 改:客户端（仅管理员） / 优化设置
+        // 窗口太窄时依次降级：标签缩短「优化设置」→「优化」；再挤就把「改:…」收进设置弹窗
+        int editW = 52;
+        int editX = settingsX - 3 - editW;
+        int optW = 56;
+        int optX = (ClientSettings.admin ? editX : settingsX) - 3 - optW;
+        boolean headerEdit = ClientSettings.admin;
+        if (optX < tabEnd + 4) {
+            optW = 34;
+            optX = (ClientSettings.admin ? editX : settingsX) - 3 - optW;
+            if (optX < tabEnd + 4) {
+                headerEdit = false;
+                optX = settingsX - 3 - optW;
+            }
+        }
+        final String optLabel = optW >= 56 ? "优化设置" : "优化";
+
+        if (headerEdit) {
             addRenderableWidget(Button.builder(editTargetLabel(), b -> {
                 editServer = !editServer;
                 ClientSettings.editServer = editServer;
                 ClientSettings.touch();
                 b.setMessage(editTargetLabel());
-            }).bounds(settingsX - 3 - 52, tabY, 52, 16).build());
+            }).bounds(editX, tabY, editW, 16).build());
         }
 
         addRenderableWidget(Button.builder(Component.literal("设置"), b -> {
             settingsOpen = !settingsOpen;
             if (settingsOpen) {
+                optimizeOpen = false;
                 closeTypePicker();
                 closePartnerPicker();
                 ruleEditOpen = false;
             }
         }).bounds(settingsX, tabY, settingsW, 16).build());
 
-        int optimizeW = 56;
-        addRenderableWidget(Button.builder(Component.literal("优化设置"), b -> {
+        addRenderableWidget(Button.builder(Component.literal(optLabel), b -> {
             optimizeOpen = !optimizeOpen;
             if (optimizeOpen) {
                 settingsOpen = false;
@@ -372,8 +390,7 @@ public class CleanerScreen extends Screen {
                 ruleEditOpen = false;
                 rangeEditorOpen = false;
             }
-        }).bounds(settingsX - 3 - optimizeW, tabY, optimizeW, 16).build());
-
+        }).bounds(optX, tabY, optW, 16).build());
 
         this.search = new EditBox(this.font, listX(), panelY() + 42, listW(), 16, Component.literal("搜索"));
         this.search.setHint(Component.literal("搜索名称 / 拼音首字母 / @modid …"));
@@ -2355,7 +2372,7 @@ public class CleanerScreen extends Screen {
     }
 
     private int settingsH() {
-        return 108;
+        return ClientSettings.admin ? 140 : 108;
     }
 
     private int optimizeW() {
@@ -2399,6 +2416,16 @@ public class CleanerScreen extends Screen {
                 ClientSettings.rememberSearch ? COLOR_OK : COLOR_OFF, false);
         gg.drawString(this.font, "§8关掉后每次打开都是空搜索框", x + 12, y + 50, COLOR_DIM, false);
         gg.drawString(this.font, "§8（性能相关选项在「优化设置」里）", x + 12, y + 62, COLOR_FAINT, false);
+
+        // 管理员的「编辑目标」：标题栏放不下时会收进这里，所以这里始终给一个入口
+        if (ClientSettings.admin) {
+            boolean hoverEdit = inRect(mouseX, mouseY, x + 8, y + 70, w - 16, 16);
+            if (hoverEdit) gg.fill(x + 8, y + 70, x + w - 8, y + 86, COLOR_HOVER);
+            gg.drawString(this.font, "改规则到", x + 12, y + 73, COLOR_TEXT, false);
+            gg.drawString(this.font, editServer ? "§c服务端" : "§a客户端", x + w - 8 - this.font.width("服务端"),
+                    y + 73, editServer ? 0xFFFF9A9A : COLOR_OK, false);
+            gg.drawString(this.font, "§8点一下切换（服务端规则要服主权限）", x + 12, y + 90, COLOR_FAINT, false);
+        }
 
         drawToggleBtn(gg, x + 8, y + h - 26, 64, 18, "完成", false,
                 inRect(mouseX, mouseY, x + 8, y + h - 26, 64, 18));
@@ -2514,6 +2541,14 @@ public class CleanerScreen extends Screen {
         if (mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 26 && mouseY < y + 42) {
             ClientSettings.rememberSearch = !ClientSettings.rememberSearch;
             ClientSettings.touch();
+            return true;
+        }
+        if (ClientSettings.admin
+                && mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 70 && mouseY < y + 86) {
+            editServer = !editServer;
+            ClientSettings.editServer = editServer;
+            ClientSettings.touch();
+            setStatus(editServer ? "规则改动会写到服务端" : "规则改动只写本地");
             return true;
         }
         if (mouseX >= x + 8 && mouseX <= x + 72 && mouseY >= y + h - 26 && mouseY < y + h - 8) {

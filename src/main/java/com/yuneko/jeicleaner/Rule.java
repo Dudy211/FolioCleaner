@@ -196,6 +196,32 @@ public class Rule {
                 || TYPE_KEEP.equals(type) || TYPE_CATEGORY.equals(type));
     }
 
+    /**
+     * 内容指纹（不含 revision）。
+     *
+     * <p>用来判断「改了又改回去」：这种时候 {@link Rules#revision()} 已经变了，
+     * 但内容和上次应用的一模一样，不该再提示「未同步」。
+     */
+    public int contentHash() {
+        int h = type == null ? 0 : type.hashCode();
+        h = h * 31 + (target == null ? 0 : target.hashCode());
+        h = h * 31 + (hideOutput ? 1 : 0);
+        h = h * 31 + (hideIngredient ? 1 : 0);
+        h = h * 31 + (hideItem ? 1 : 0);
+        h = h * 31 + (action == null ? 0 : action.hashCode());
+        h = h * 31 + (enabled ? 1 : 0);
+        for (Range range : effectiveRanges()) {
+            h = h * 31 + (range.type == null ? 0 : range.type.hashCode());
+            for (java.util.List<String> group : range.groups()) {
+                h = h * 31 + 1;
+                for (String partner : group) {
+                    h = h * 31 + (partner == null ? 0 : partner.hashCode());
+                }
+            }
+        }
+        return h;
+    }
+
     public boolean sameAs(Rule other) {
         return other != null
                 && type.equals(other.type)

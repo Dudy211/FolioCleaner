@@ -60,8 +60,10 @@ public final class Cleaner {
     /** -1 = 没有待办；>0 = 还要等几个 tick */
     private static int countdown = -1;
 
-    /** 最近一次成功应用时的规则版本（用来判断有没有未同步的修改） */
+    /** 最近一次成功应用时的规则版本（单调递增，只用来刷新缓存） */
     private static int appliedRevision = -1;
+    /** 最近一次成功应用时的规则**内容**指纹：改完又改回来就算「已同步」 */
+    private static int appliedFingerprint = Integer.MIN_VALUE;
 
     // ---- 自定义 JEI 配方的分帧任务（避免一次性卡 10 秒） ----
     private static boolean customRunning;
@@ -130,7 +132,8 @@ public final class Cleaner {
 
     /** 规则改过但还没应用（GUI 用它显示警告 + 同步按钮） */
     public static boolean hasPendingChanges() {
-        return Rules.revision() != appliedRevision;
+        // 比内容而不是比 revision：加一条规则再删掉，内容回到原样，不该再提示未同步
+        return Rules.contentHash() != appliedFingerprint;
     }
 
     /** 手动同步：下一个 tick 应用当前规则 */
@@ -187,6 +190,7 @@ public final class Cleaner {
             lastApplyOk = true;
             lastApplyMs = (System.nanoTime() - start) / 1_000_000L;
             appliedRevision = Rules.revision();
+            appliedFingerprint = Rules.contentHash();
             return 0;
         }
 
@@ -306,6 +310,7 @@ public final class Cleaner {
                 recipeCount, itemCount, lastApplyMs, customRunning);
         if (!customRunning) {
             appliedRevision = Rules.revision();
+            appliedFingerprint = Rules.contentHash();
         }
         return recipeCount;
     }
@@ -472,6 +477,7 @@ public final class Cleaner {
         lastHiddenRecipes += customHidden;
         lastApplyOk = true;
         appliedRevision = Rules.revision();
+        appliedFingerprint = Rules.contentHash();
         if (applyStartedAt > 0) {
             lastApplyMs = (System.nanoTime() - applyStartedAt) / 1_000_000L;
         }

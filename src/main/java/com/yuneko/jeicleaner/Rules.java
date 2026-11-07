@@ -44,6 +44,8 @@ public final class Rules {
 
     /** 每次规则变动 +1 */
     private static int revision;
+    /** 规则内容指纹，{@link #bump()} 时重算；空规则列表的值是 7 */
+    private static int contentHash = 7;
 
     private Rules() {
     }
@@ -54,6 +56,25 @@ public final class Rules {
 
     private static void bump() {
         revision++;
+        contentHash = computeContentHash();
+    }
+
+    /**
+     * 规则「内容」的指纹（不含 revision）。
+     *
+     * <p>典型场景：加一条规则又立刻删掉 —— revision 变了，但内容回到原样，
+     * 这时不应该提示「未同步」。
+     */
+    public static int contentHash() {
+        return contentHash;
+    }
+
+    private static int computeContentHash() {
+        int h = 7;
+        for (Rule rule : all()) {
+            h = h * 31 + (rule == null ? 0 : rule.contentHash());
+        }
+        return h;
     }
 
     // ---------------------------------------------------------------- 文件
