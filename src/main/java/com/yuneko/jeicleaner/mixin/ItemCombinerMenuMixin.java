@@ -17,19 +17,20 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *
  * <p>这些工作台都继承 {@link ItemCombinerMenu}，合成结果在
  * {@code slotsChanged(Container)} 里生成到 {@code resultSlots}。
- * 在方法末尾检查一次结果槽：输入组合命中 {@code remove} 规则就清空。
+ * 在方法末尾检查一次结果槽：输入组合命中 {@code remove} 规则就清空，
+ * 玩家那边看到的就是「没有可合成的结果」。
  *
- * <p>{@code require = 0}：目标类结构变了就静默跳过，绝不因此崩客户端。
+ * <p>{@code require = 0}：一旦目标类结构变了（换 MC 版本），静默跳过，绝不因此崩客户端。
  */
 @Mixin(value = ItemCombinerMenu.class, remap = false)
 public abstract class ItemCombinerMenuMixin {
 
-    /** resultSlots */
+    /** resultSlots（ResultContainer） */
     @Shadow
     @Final
     protected ResultContainer f_39768_;
 
-    /** inputSlots */
+    /** inputSlots（Container） */
     @Shadow
     @Final
     protected Container f_39769_;

@@ -19,8 +19,16 @@ import java.util.List;
 /**
  * 规则仓库。
  *
- * <p>两份文件：server.json（服主权威，登录时下发）与 client.json（玩家本地）。
- * 实际生效 = SERVER + CLIENT。
+ * <p>拆成两份文件：
+ * <ul>
+ *   <li>{@code config/jeicleaner/server.json} —— <b>服务端权威规则</b>。服主配置，
+ *       服务端据此真删配方（action=remove），并在玩家登录时整份下发给客户端。</li>
+ *   <li>{@code config/jeicleaner/client.json} —— <b>客户端本地规则</b>。玩家自己加的额外隐藏，
+ *       只影响自己，不会覆盖服务端下发的那份。</li>
+ * </ul>
+ *
+ * <p>客户端实际生效 = 服务端规则 + 本地规则（合并，服务端在前）。
+ * GUI 只会编辑本地那份，服务端下发的部分在界面上是只读的。
  */
 public final class Rules {
 
@@ -29,9 +37,12 @@ public final class Rules {
             .disableHtmlEscaping()
             .create();
 
+    /** 服务端权威规则（专用服务器读 server.json；客户端由网络包填充） */
     private static final List<Rule> SERVER = new ArrayList<>();
+    /** 客户端本地规则（client.json，GUI 编辑的是这份） */
     private static final List<Rule> CLIENT = new ArrayList<>();
 
+    /** 每次规则变动 +1 */
     private static int revision;
 
     private Rules() {
@@ -59,12 +70,14 @@ public final class Rules {
         return folder().resolve("client.json");
     }
 
+    /** 旧版单文件路径，用于自动迁移 */
     private static Path legacyFile() {
         return FMLPaths.CONFIGDIR.get().resolve("jeicleaner.json");
     }
 
     // ---------------------------------------------------------------- 读取
 
+    /** 只读服务端那份（服务端删除配方时用） */
     public static void loadServerRules() {
         SERVER.clear();
         bump();
@@ -75,6 +88,7 @@ public final class Rules {
         }
     }
 
+    /** 只读客户端那份（GUI 编辑的那份） */
     public static void loadClientRules() {
         CLIENT.clear();
         bump();
@@ -84,6 +98,7 @@ public final class Rules {
         }
     }
 
+    /** 双端通用：两份都读 */
     public static void load() {
         loadServerRules();
         loadClientRules();
@@ -120,7 +135,7 @@ public final class Rules {
             JsonObject root = new JsonObject();
             root.addProperty("_comment",
                     "JEI Cleaner 规则。type = item / mod / recipe / keep / category；"
-                            + "action = hide / remove；ranges 为空表示不限类型。");
+                            + "action = hide（JEI 隐藏）/ remove（服务端真删）；recipeType 留空表示不限工作台。");
             JsonArray arr = new JsonArray();
             for (Rule rule : rules) arr.add(toJson(rule));
             root.add("rules", arr);
@@ -132,7 +147,7 @@ public final class Rules {
 
     // ---------------------------------------------------------------- 查询
 
-    /** 实际生效：服务端在前，然后是本地 */
+    /** 实际生效的规则：本地 + 服务端（服务端在前，方便看哪些是强制的） */
     public static List<Rule> all() {
         List<Rule> merged = new ArrayList<>(SERVER.size() + CLIENT.size());
         merged.addAll(SERVER);
@@ -140,10 +155,12 @@ public final class Rules {
         return Collections.unmodifiableList(merged);
     }
 
+    /** 服务端那份（真删配方用） */
     public static List<Rule> serverRules() {
         return Collections.unmodifiableList(SERVER);
     }
 
+    /** 本地那份（GUI 编辑用） */
     public static List<Rule> clientRules() {
         return Collections.unmodifiableList(CLIENT);
     }
@@ -163,6 +180,7 @@ public final class Rules {
         return n;
     }
 
+    /** 按 all() 的下标取 —— 前 SERVER.size() 条是服务端规则 */
     public static Rule get(int index) {
         if (index < 0) return null;
         if (index < SERVER.size()) return SERVER.get(index);
@@ -170,7 +188,7 @@ public final class Rules {
         return i < CLIENT.size() ? CLIENT.get(i) : null;
     }
 
-    // ---------------------------------------------------------------- 修改（本地）
+    // ---------------------------------------------------------------- 修改（只动本地那份）
 
     public static boolean add(Rule rule) {
         if (rule == null || !rule.isValid()) return false;
@@ -199,6 +217,8 @@ public final class Rules {
         add(rule);
     }
 
+    /** 只允许删除本地规则；服务端下发的不让改 */
+    /** 按 all() 的下标原地替换一条本地规则（改 recipeType 也不会变成新增） */
     public static boolean updateAt(int index, Rule rule) {
         if (rule == null || !rule.isValid() || isServerRule(index)) return false;
         int i = index - SERVER.size();
@@ -236,6 +256,7 @@ public final class Rules {
         writeFile(clientFile(), CLIENT);
     }
 
+    /** 把所有规则的「工作台范围」清空（只作用于本地规则） */
     public static int clearTypeFilters() {
         int n = 0;
         for (Rule r : CLIENT) {
@@ -266,7 +287,10 @@ public final class Rules {
         JeiCleaner.LOGGER.info("[JEI Cleaner] 已接收服务端规则 {} 条", parsed.size());
     }
 
-    /** 管理员提交：写 server.json 并替换内存 SERVER；调用方随后 apply + 广播 */
+    /**
+     * 服务端收到管理员提交的规则：写进 server.json，并替换内存里的 SERVER。
+     * 调用方负责随后执行 {@code RecipeRemover.apply} 和广播。
+     */
     public static void acceptServerRulesFromAdmin(String json) {
         List<Rule> parsed;
         try {
@@ -282,11 +306,13 @@ public final class Rules {
         JeiCleaner.LOGGER.info("[JEI Cleaner] 管理员更新服务端规则：{} 条", parsed.size());
     }
 
+    /** 管理员模式下，把本地编辑结果同步给服务端（由 GUI 调用） */
     public static void pushServerRules() {
         CleanerNetwork.CHANNEL.sendToServer(
                 new CleanerNetwork.UpdateServerRulesPacket(exportJson()));
     }
 
+    /** 直接改 SERVER 列表里的某一条（管理员 GUI 用，改完调用 {@link #pushServerRules()}） */
     public static boolean updateServerAt(int index, Rule rule) {
         if (rule == null || !rule.isValid()) return false;
         if (index < 0 || index >= SERVER.size()) return false;
@@ -389,18 +415,18 @@ public final class Rules {
         obj.addProperty("type", rule.type);
         obj.addProperty("target", rule.target);
         obj.addProperty("action", rule.action == null ? Rule.ACTION_HIDE : rule.action);
-
+        // 新模型：多组范围（旧字段同时写一份，供旧版本 / 指令读取）
         JsonArray ranges = new JsonArray();
         for (Rule.Range range : rule.effectiveRanges()) {
             JsonObject r = new JsonObject();
             r.addProperty("type", range.type == null ? "" : range.type);
-
             JsonArray partners = new JsonArray();
             if (range.partners != null) {
                 for (String p : range.partners) partners.add(p);
             }
             r.add("partners", partners);
 
+            // 新：外层「或」，内层「与」
             JsonArray groups = new JsonArray();
             for (java.util.List<String> group : range.groups()) {
                 JsonArray g = new JsonArray();
@@ -429,14 +455,12 @@ public final class Rules {
         rule.action = obj.has("action") ? obj.get("action").getAsString() : Rule.ACTION_HIDE;
         rule.recipeType = obj.has("recipeType") ? obj.get("recipeType").getAsString() : "";
         rule.partner = obj.has("partner") ? obj.get("partner").getAsString() : "";
-
         if (obj.has("ranges") && obj.get("ranges").isJsonArray()) {
             for (JsonElement element : obj.getAsJsonArray("ranges")) {
                 if (!element.isJsonObject()) continue;
                 JsonObject r = element.getAsJsonObject();
                 Rule.Range range = new Rule.Range(
                         r.has("type") ? r.get("type").getAsString() : "");
-
                 if (r.has("partners") && r.get("partners").isJsonArray()) {
                     for (JsonElement p : r.getAsJsonArray("partners")) {
                         String value = p.getAsString();
@@ -475,6 +499,7 @@ public final class Rules {
         return rule;
     }
 
+    // 兼容旧调用
     public static void save() {
         writeFile(clientFile(), CLIENT);
     }

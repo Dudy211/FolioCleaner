@@ -30,15 +30,20 @@ import java.util.List;
  *
  * <pre>
  * /jeicleaner                                    打开图形界面
- * /jeicleaner add item &lt;物品id&gt; [配方类型]
- * /jeicleaner add itemonly &lt;物品id&gt;
- * /jeicleaner add mod &lt;modid&gt; [配方类型]
- * /jeicleaner add keep &lt;modid&gt;
- * /jeicleaner add type &lt;配方类型&gt;
- * /jeicleaner add recipe &lt;配方id&gt;
- * /jeicleaner list / remove / toggle / export / clear / reload / apply
- * /jeicleaner verify / diag &lt;物品id&gt; / widen
+ * /jeicleaner add item &lt;物品id&gt; [配方类型]        隐藏该物品参与的所有配方
+ * /jeicleaner add itemonly &lt;物品id&gt;              只在 JEI 物品列表里隐藏这个物品
+ * /jeicleaner add mod &lt;modid&gt; [配方类型]          隐藏某个模组的全部配方
+ * /jeicleaner add recipe &lt;配方id&gt;                隐藏某一条配方
+ * /jeicleaner list                               列出当前规则
+ * /jeicleaner remove &lt;序号&gt;                      删除一条规则
+ * /jeicleaner toggle &lt;序号&gt;                      启用/停用一条规则
+ * /jeicleaner export                             把规则 JSON 复制到剪贴板
+ * /jeicleaner clear                              清空全部规则
+ * /jeicleaner reload                             重新读取 config/jeicleaner.json
+ * /jeicleaner apply                              立即重新应用
  * </pre>
+ *
+ * <p>配方类型例如 {@code minecraft:crafting}，省略表示不限。
  */
 public final class CleanerCommands {
 
@@ -279,8 +284,7 @@ public final class CleanerCommands {
         return Math.max(1, matched);
     }
 
-    private static int list(CommandContext<CommandSourceStack> ctx) {
-        if (Rules.size() == 0) {
+    private static int list(CommandContext<CommandSourceStack> ctx) {        if (Rules.size() == 0) {
             return feedback("当前没有任何隐藏规则。用 /jeicleaner 打开界面添加。");
         }
         CommandSourceStack source = ctx.getSource();
@@ -344,7 +348,9 @@ public final class CleanerCommands {
         return Command.SINGLE_SUCCESS;
     }
 
-    /** modid 允许 - 和 .，Brigadier 自带的 word() 不够用 */
+    /**
+     * modid 允许 {@code -} 和 {@code .}，Brigadier 自带的 word() 不够用，这里自己读。
+     */
     public static final class ModIdArgument implements ArgumentType<String> {
 
         public static ModIdArgument modId() {

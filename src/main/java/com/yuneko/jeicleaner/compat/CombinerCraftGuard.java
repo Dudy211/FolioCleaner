@@ -4,6 +4,7 @@ import com.yuneko.jeicleaner.Rule;
 import com.yuneko.jeicleaner.Rules;
 import net.minecraft.world.Container;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 
 import java.util.List;
 

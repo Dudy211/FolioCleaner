@@ -52,6 +52,7 @@ dependencies {
 
 tasks.named('processResources', ProcessResources).configure {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    // 不设 UTF-8 的话 mods.toml 里的中文描述会变成乱码
     filteringCharset = 'UTF-8'
 
     var expandProps = [

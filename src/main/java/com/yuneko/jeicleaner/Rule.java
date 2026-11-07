@@ -4,39 +4,62 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 一条隐藏/删除规则。
+ * 一条隐藏规则。
  *
- * <p>类型：item / mod / recipe / keep（白名单）/ category（整个配方类型）。
+ * <p>三种类型：
+ * <ul>
+ *   <li>{@code item}   —— target 是物品 id，例如 {@code minecraft:diamond_sword}</li>
+ *   <li>{@code mod}    —— target 是 modid，例如 {@code botania}</li>
+ *   <li>{@code recipe} —— target 是配方 id，例如 {@code minecraft:stick}</li>
+ * </ul>
  *
- * <p>范围模型：一条规则可以有多组 {@link Range}，组之间是「或」；
- * 每组下面可以有多条搭配，{@link Range#partnerGroups} 外层「或」、内层「与」。
+ * <p>{@code item} 规则可以通过三个开关细化行为：隐藏产出它的配方、隐藏把它当原料的配方、
+ * 以及把这个物品本身从 JEI 物品列表里摘掉。
+ *
+ * <p>{@code recipeType} 是可选的「工作台/配方类型」限制：
+ * 例如 {@code minecraft:crafting} 表示只处理工作台配方，
+ * 留空表示不限制（熔炉、切石机等等全都算）。
  */
 public class Rule {
 
     public static final String TYPE_ITEM = "item";
     public static final String TYPE_MOD = "mod";
     public static final String TYPE_RECIPE = "recipe";
-    /** 白名单：只保留这些模组的配方 */
-    public static final String TYPE_KEEP = "keep";
-    /** 整个配方类型 */
-    public static final String TYPE_CATEGORY = "category";
-
+    /** 白名单：只保留这些模组的配方，其余全部隐藏 */
     /** 只在 JEI 里看不到，仍然可以合成 */
     public static final String ACTION_HIDE = "hide";
-    /** 从服务端配方表移除（或拦结果）：看不到、合不成 */
+    /** 从服务端配方表移除：所有人都看不到、也合成不了 */
     public static final String ACTION_REMOVE = "remove";
 
+    public static final String TYPE_KEEP = "keep";
+    /** 整个配方类型（工作台）全部隐藏 */
+    public static final String TYPE_CATEGORY = "category";
+
     /**
-     * 一组范围：一个配方类型 + 若干「与/或」搭配。
+     * 一组范围：一个配方类型 + 该组下的若干「搭配」。
+     *
+     * <p>规则可以有多组，组与组之间是<b>或</b>：任意一组命中就生效。
+     * 同一组里的多个搭配也是<b>或</b>：配方里另一个输入接受任意一个即可。
      */
     public static final class Range {
         /** 空 = 不限配方类型 */
         public String type = "";
 
-        /** 扁平搭配列表（旧格式 / 兼容用） */
+        /**
+         * 扁平搭配列表（旧格式 / 兼容用）。
+         *
+         * <p>真正的匹配以 {@link #partnerGroups} 为准：
+         * 外层是「或」，内层是「与」。这里保留一份扁平镜像方便读写旧配置。
+         */
         public List<String> partners = new ArrayList<>();
 
-        /** 分组搭配：外层「或」，内层「与」：[ [A,B], [C] ] → (A且B) 或 C */
+        /**
+         * 分组的搭配条件：外层「或」，内层「与」。
+         *
+         * <pre>
+         * [ [A, B], [C] ]  →  (A 且 B) 或 C
+         * </pre>
+         */
         public List<List<String>> partnerGroups = new ArrayList<>();
 
         public Range() {
@@ -50,7 +73,7 @@ public class Rule {
             return type != null && !type.isBlank();
         }
 
-        /** 有效分组：新字段优先；否则把旧 partners 变成「每个各一组」 */
+        /** 有效分组：新字段优先；否则把旧 partners 变成「每个各一组」（保持原来的或语义） */
         public List<List<String>> groups() {
             if (partnerGroups == null) partnerGroups = new ArrayList<>();
             if (partnerGroups.isEmpty() && partners != null && !partners.isEmpty()) {
@@ -106,27 +129,43 @@ public class Rule {
         }
     }
 
+    /** item / mod / recipe */
     public String type = TYPE_ITEM;
+    /** 物品 id / modid / 配方 id */
     public String target = "";
 
-    /** item：隐藏「产出这个物品」的配方 */
+    /** item 规则：隐藏「产出这个物品」的配方 */
     public boolean hideOutput = true;
-    /** item：隐藏「把这个物品当原料」的配方 */
+    /** item 规则：隐藏「把这个物品当原料」的配方 */
     public boolean hideIngredient = true;
-    /** item：把这个物品本身也从 JEI 物品列表里移除 */
+    /** item 规则：把这个物品本身也从 JEI 的物品列表里移除 */
     public boolean hideItem = false;
 
     /** hide / remove */
     public String action = ACTION_HIDE;
 
-    /** 旧字段：第一组的类型镜像（兼容） */
+    /** 可选的配方类型限制，空字符串 = 不限制 */
     public String recipeType = "";
-    /** 旧字段：第一组的第一个搭配镜像（兼容） */
+
+    /**
+     * 可选的「搭配」：配方的<b>另一个输入</b>必须包含它。
+     *
+     * <p>普通物品 id（{@code minecraft:diamond_sword}）或物品标签（{@code #forge:swords}）。
+     * 空字符串 = 不限制。用来做更精确的匹配，例如：
+     * 「只隐藏升级法球在奥术铁砧里搭配武器/装备的那些配方」。
+     */
     public String partner = "";
 
-    /** 多组范围（至少一组） */
+    /**
+     * 新模型：多组「类型 + 搭配」。
+     *
+     * <p>旧字段 {@link #recipeType} / {@link #partner} 仍然保留，作为第一组的镜像，
+     * 供旧指令 / 规则行显示使用；运行时匹配以本字段为准（为空时回退到旧字段）。
+     * 保证至少有一组。
+     */
     public List<Range> ranges = new ArrayList<>();
 
+    /** 临时停用（保留规则但不生效） */
     public boolean enabled = true;
 
     public Rule() {
@@ -181,6 +220,7 @@ public class Rule {
         return true;
     }
 
+    /** 是否限制了配方类型（任意一组） */
     public boolean hasTypeFilter() {
         for (Range range : effectiveRanges()) {
             if (range.hasType()) return true;
@@ -188,6 +228,7 @@ public class Rule {
         return false;
     }
 
+    /** 是否限制了「搭配」输入（任意一组） */
     public boolean hasPartner() {
         for (Range range : effectiveRanges()) {
             if (range.hasPartners()) return true;
@@ -195,6 +236,7 @@ public class Rule {
         return false;
     }
 
+    /** 保证至少一组（用户可删到只剩一组，不允许 0 组） */
     public void ensureRanges() {
         if (ranges == null) ranges = new ArrayList<>();
         if (ranges.isEmpty()) ranges.add(new Range());
@@ -210,6 +252,7 @@ public class Rule {
         return list;
     }
 
+    /** 把第一组同步回旧字段（供旧指令 / 显示使用） */
     public void syncLegacy() {
         ensureRanges();
         Range first = ranges.get(0);
@@ -263,7 +306,7 @@ public class Rule {
         } else {
             Range only = ranges.get(0);
             if (only.hasType()) sb.append(" @").append(only.type);
-            if (only.hasPartners()) sb.append(" +" ).append(String.join("/", only.partners));
+            if (only.hasPartners()) sb.append(" +").append(String.join("/", only.partners));
         }
         return sb.toString();
     }

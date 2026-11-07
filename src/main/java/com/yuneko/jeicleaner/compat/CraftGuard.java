@@ -16,7 +16,7 @@ import net.minecraft.world.Container;
  *   <li>在 {@link CraftGuards} 的静态块里 {@code register(new YourGuard())}；</li>
  *   <li>如果目标工作台不是 {@code ItemCombinerMenu} 的子类，需要再加一个 Mixin
  *       （参考 {@code mixin/ItemCombinerMenuMixin}），在生成结果 / 取出结果的位置
- *       调用 {@link CraftGuards#isBlocked(Container)}。</li>
+ *       调用 {@link CraftGuards#isBlocked(Container, CraftGuard)}。</li>
  * </ol>
  *
  * <p><b>只读约定</b>：实现里不要改容器内容，只返回 true/false；清空结果由调用方负责。

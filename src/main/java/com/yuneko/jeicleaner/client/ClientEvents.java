@@ -1,6 +1,7 @@
 package com.yuneko.jeicleaner.client;
 
 import com.yuneko.jeicleaner.Cleaner;
+import com.yuneko.jeicleaner.ClientSettings;
 import com.yuneko.jeicleaner.JeiCleaner;
 import com.yuneko.jeicleaner.Rules;
 import net.minecraftforge.api.distmarker.Dist;
@@ -38,8 +39,11 @@ public final class ClientEvents {
         int revision = Rules.revision();
         if (revision != seenRevision) {
             seenRevision = revision;
-            // 自动同步：原版配方立刻应用（很快），自定义配方走分帧任务（顶部有进度条）
-            Cleaner.requestApply();
+            // 默认不同步：改完规则要点「同步」按钮才生效。
+            // 打开「优化设置 → 自动同步」才会在这里自动重算（延后 8 tick，连续编辑只扫一次）。
+            if (ClientSettings.autoSync) {
+                Cleaner.requestApplyDelayed(8);
+            }
         }
 
         try {

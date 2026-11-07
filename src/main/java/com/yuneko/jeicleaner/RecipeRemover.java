@@ -5,9 +5,9 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.protocol.game.ClientboundUpdateRecipesPacket;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.TagKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.tags.TagKey;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -28,11 +28,16 @@ import java.util.Set;
 /**
  * 在服务端真正把配方从 {@link RecipeManager} 里摘掉。
  *
- * <p>配方不存在 → 同步给客户端的配方包里也没有 → 所有玩家都看不到、也合成不了。
+ * <p>这是「删除」模式的实现：配方不存在 → 同步给客户端的配方包里也没有 →
+ * 所有玩家都看不到、也合成不了，客户端装不装模组都一样。
  *
- * <p><b>1.20.1 注意：</b>{@code byName}（f_199900_）和 {@code recipes}（f_44007_）
- * 运行时都是 Guava {@code ImmutableMap}，直接 {@code keySet().removeAll()} 会抛
- * {@code UnsupportedOperationException}。所以这里整体替换成可变副本，并保留原引用以便还原。
+ * <p>服务端没有 JEI，所以这里用「配方类型 id 字符串」做匹配，不依赖 JEI 的 RecipeType。
+ *
+ * <p><b>1.20.1 的实现注意：</b>{@code RecipeManager} 的 {@code byName}（f_199900_）和
+ * {@code recipes}（f_44007_）两个字段在运行时都是 Guava {@code ImmutableMap}
+ * （构造时 {@code ImmutableMap.of()}，数据重载时 {@code ImmutableMap.copyOf / builder.build()}），
+ * 直接 {@code keySet().removeAll()} 会抛 {@code UnsupportedOperationException}。
+ * 所以这里是把字段整体替换成可变副本，并保留原始引用以便还原。
  */
 public final class RecipeRemover {
 
@@ -142,7 +147,7 @@ public final class RecipeRemover {
             byTypeField.setAccessible(true);
 
             // 只有当字段仍然是我们装进去的副本时才还原。
-            // 如果已经被 /reload 换成新数据，就不要再写旧数据回去。
+            // 如果已经被 /reload 换成新数据（配方已从文件重新加载），就不要再写旧数据回去。
             if (originalByName != null && byNameField.get(manager) == installedByName) {
                 byNameField.set(manager, originalByName);
                 changed = true;
@@ -162,6 +167,7 @@ public final class RecipeRemover {
         }
 
         if (changed) {
+            // 配方回来了，也要让在线玩家看到
             resync(server);
         }
     }
@@ -201,6 +207,16 @@ public final class RecipeRemover {
     }
 
     public static boolean matches(Recipe<?> recipe, List<Rule> rules, RegistryAccess registryAccess) {
+        return matches(recipe, rules, registryAccess, false);
+    }
+
+    /**
+     * @param includeHide true 时把「隐藏」规则也算命中。
+     *                    客户端统计「还有哪些配方看得见」时要传 true —— 否则用户藏了东西，
+     *                    排行榜的数字却纹丝不动，看着像没生效。
+     */
+    public static boolean matches(Recipe<?> recipe, List<Rule> rules, RegistryAccess registryAccess,
+                                  boolean includeHide) {
         ResourceLocation typeId = BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType());
         String namespace = recipe.getId().getNamespace();
         ItemStack result = safeResult(recipe, registryAccess);
@@ -208,7 +224,8 @@ public final class RecipeRemover {
         for (Rule rule : rules) {
             if (rule == null || !rule.enabled) continue;
             // 服务端只处理「删除」规则；「隐藏」交给客户端 JEI
-            if (!Rule.ACTION_REMOVE.equals(rule.action)) continue;
+            if (!Rule.ACTION_REMOVE.equals(rule.action)
+                    && !(includeHide && Rule.ACTION_HIDE.equals(rule.action))) continue;
 
             if (Rule.TYPE_RECIPE.equals(rule.type)) {
                 if (recipe.getId().toString().equals(rule.target)) return true;
@@ -285,7 +302,10 @@ public final class RecipeRemover {
         return false;
     }
 
-    /** 配方是否把 item 当原料；groups 非空时还要求其它格子接受它们 */
+    /**
+     * 配方是否把 item 当原料；partner 非空时还要求另一个格子接受它
+     * （与服务端无关的 JEI 类型，这里不引用 Selector，避免服务端加载 JEI 类）。
+     */
     private static boolean matchesIngredient(Recipe<?> recipe, Item item, List<List<String>> groups) {
         ItemStack probe = new ItemStack(item);
         List<Ingredient> ingredients = recipe.getIngredients();

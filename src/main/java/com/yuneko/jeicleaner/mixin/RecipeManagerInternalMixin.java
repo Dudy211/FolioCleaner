@@ -15,7 +15,7 @@ import java.util.stream.Stream;
  * 在 JEI 输出配方流的最后一刻过滤。
  *
  * <p>{@code RecipeManagerInternal#getRecipesStream} 会把所有 {@code IRecipeManagerPlugin}
- * 的结果合并起来，这里对最终结果按规则再过一遍。
+ * 的结果合并起来，这里对最终结果按规则再过一遍 —— 不管配方是注册进来的还是动态生成的。
  *
  * <p>故意 {@code require = 0}：JEI 版本变动导致注入失败时静默跳过，不能因此让客户端崩。
  */
@@ -31,7 +31,7 @@ public class RecipeManagerInternalMixin {
         try {
             cir.setReturnValue(original.filter(recipe -> RuntimeFilter.keep(recipe, recipeType)));
         } catch (Throwable ignored) {
-            // 过滤出问题时保持原样
+            // 过滤出问题时保持原样，不影响 JEI 正常显示
         }
     }
 }

@@ -25,11 +25,11 @@ public final class ClientSettings {
     public static boolean defaultIngredient = true;
     /** 属性台：hide / remove */
     public static String defaultAction = Rule.ACTION_HIDE;
-    /** 属性台：当前范围（空 = 全部） */
+    /** 属性台：当前范围（空 = 全部，逗号分隔可多选） */
     public static String defaultRecipeType = "";
     /** 属性台：范围显示名 */
     public static String defaultRecipeTypeLabel = "";
-    /** 属性台：搭配（旧字段，第一组的第一个） */
+    /** 属性台：搭配（空 = 不限；物品 id 或 #标签） */
     public static String defaultPartner = "";
     /** 属性台：搭配显示名 */
     public static String defaultPartnerLabel = "";
@@ -38,6 +38,10 @@ public final class ClientSettings {
 
     /** 是否记住搜索栏内容 */
     public static boolean rememberSearch = true;
+    /** 分页懒布局：大分类只建当前页的布局（见 {@link LazyPages}） */
+    public static boolean lazyPages = true;
+    /** 规则改完自动同步；关掉后必须点「同步」按钮才生效（默认关，避免编辑时反复全量扫描） */
+    public static boolean autoSync = false;
     /** 上次的搜索词 */
     public static String lastSearch = "";
     /** 上次的标签页 ITEM / MOD / RECIPE */
@@ -74,6 +78,8 @@ public final class ClientSettings {
             if (obj.has("defaultPartnerLabel")) defaultPartnerLabel = obj.get("defaultPartnerLabel").getAsString();
             if (obj.has("defaultRangesJson")) defaultRangesJson = obj.get("defaultRangesJson").getAsString();
             if (obj.has("rememberSearch")) rememberSearch = obj.get("rememberSearch").getAsBoolean();
+            if (obj.has("lazyPages")) lazyPages = obj.get("lazyPages").getAsBoolean();
+            if (obj.has("autoSync")) autoSync = obj.get("autoSync").getAsBoolean();
             if (obj.has("lastSearch")) lastSearch = obj.get("lastSearch").getAsString();
             if (obj.has("lastTab")) lastTab = obj.get("lastTab").getAsString();
             if (obj.has("editServer")) editServer = obj.get("editServer").getAsBoolean();
@@ -96,6 +102,8 @@ public final class ClientSettings {
             obj.addProperty("defaultPartnerLabel", defaultPartnerLabel);
             obj.addProperty("defaultRangesJson", defaultRangesJson);
             obj.addProperty("rememberSearch", rememberSearch);
+            obj.addProperty("lazyPages", lazyPages);
+            obj.addProperty("autoSync", autoSync);
             obj.addProperty("lastSearch", lastSearch);
             obj.addProperty("lastTab", lastTab);
             obj.addProperty("editServer", editServer);

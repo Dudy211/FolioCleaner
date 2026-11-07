@@ -13,6 +13,7 @@ import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.Recipe;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -189,7 +190,10 @@ public final class Selector {
         return range.types == null || (actualType != null && range.types.contains(actualType));
     }
 
-    /** 搭配分组：外层「或」，内层「与」；空组 = 不限 */
+    /**
+     * 搭配分组是否满足：外层「或」，内层「与」。
+     * 空组（没有搭配）表示不限。
+     */
     private static boolean recipeHasPartner(Recipe<?> recipe, CompiledRange range) {
         for (List<String> group : range.groups) {
             if (group.isEmpty()) return true;
@@ -222,7 +226,8 @@ public final class Selector {
     /**
      * 配方是否「把 item 当原料」。
      *
-     * <p>groups 非空时还要求<b>其它格子</b>接受它们（与/或都支持）。
+     * <p>{@code partner} 非空时还要求<b>另一个格子</b>接受它 —— 这样可以把
+     * 「法球 + 任意装备」收窄成「法球 + 武器」。
      */
     private static boolean matchesIngredient(Recipe<?> recipe, Item item, List<List<String>> groups) {
         ItemStack probe = new ItemStack(item);
@@ -245,7 +250,7 @@ public final class Selector {
         if (groups == null || groups.isEmpty()) return true;
 
         for (List<String> group : groups) {
-            if (group.isEmpty()) return true;
+            if (group.isEmpty()) return true; // 没有搭配 = 不限
             boolean all = true;
             for (String partner : group) {
                 boolean found = false;
@@ -263,12 +268,12 @@ public final class Selector {
                     break;
                 }
             }
-            if (all) return true;
+            if (all) return true; // 这一组「与」全部满足
         }
         return false;
     }
 
-    /** 这个 Ingredient 是否接受 partner（物品 id 或 #标签） */
+    /** 这个 Ingredient 是否接受 partner（物品 id 或 {@code #标签}） */
     public static boolean ingredientAccepts(Ingredient ingredient, String partner) {
         if (ingredient == null || ingredient.isEmpty() || partner == null || partner.isBlank()) return false;
         try {

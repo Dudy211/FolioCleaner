@@ -174,10 +174,13 @@ public final class Cleaner {
             return -1;
         }
 
-        restore(runtime);
+        long t0 = System.nanoTime();
+        restoreRecipes(runtime);
+        long tRestore = System.nanoTime();
 
         IRecipeManager jeiRecipes = runtime.getRecipeManager();
         Selector selector = Selector.of(Rules.all(), jeiRecipes);
+        long tSelector = System.nanoTime();
         if (selector.isEmpty()) {
             lastHiddenRecipes = 0;
             lastHiddenItems = 0;
@@ -206,6 +209,8 @@ public final class Cleaner {
             recipeCount++;
         }
 
+        long tScan = System.nanoTime();
+
         for (Map.Entry<RecipeType<?>, List<Object>> entry : grouped.entrySet()) {
             try {
                 hideGroup(jeiRecipes, entry.getKey(), entry.getValue());
@@ -214,6 +219,7 @@ public final class Cleaner {
                 JeiCleaner.LOGGER.warn("[JEI Cleaner] 隐藏配方类型 {} 失败", entry.getKey().getUid(), t);
             }
         }
+        long tHide = System.nanoTime();
 
         startCustomJob(runtime, Rules.all());
 
@@ -234,21 +240,42 @@ public final class Cleaner {
                     entry.getKey().getUid(), asked, remain);
         }
 
+        // ---- 物品：只处理「这次真的变了」的那部分 ----
+        // add/removeIngredientsAtRuntime 会重建 JEI 的物品索引 + 搜索后缀树（几秒级），
+        // 每次编辑都全量还原再全量藏 = 白重建两遍，这是卡顿的大头。
         int itemCount = 0;
-        if (!selector.hideItems().isEmpty()) {
-            List<ItemStack> stacks = new ArrayList<>();
-            for (var item : selector.hideItems()) {
-                stacks.add(new ItemStack(item));
-            }
+        List<ItemStack> wanted = new ArrayList<>();
+        for (var item : selector.hideItems()) {
+            wanted.add(new ItemStack(item));
+        }
+        List<ItemStack> toHide = new ArrayList<>();
+        for (ItemStack st : wanted) {
+            if (!holdsItem(HIDDEN_ITEMS, st)) toHide.add(st);
+        }
+        List<ItemStack> toShow = new ArrayList<>();
+        for (ItemStack st : HIDDEN_ITEMS) {
+            if (!holdsItem(wanted, st)) toShow.add(st);
+        }
+        if (!toHide.isEmpty()) {
             try {
                 runtime.getIngredientManager().removeIngredientsAtRuntime(
-                        mezz.jei.api.constants.VanillaTypes.ITEM_STACK, stacks);
-                HIDDEN_ITEMS.addAll(stacks);
-                itemCount = stacks.size();
+                        mezz.jei.api.constants.VanillaTypes.ITEM_STACK, toHide);
+                HIDDEN_ITEMS.addAll(toHide);
+                itemCount = toHide.size();
             } catch (Throwable t) {
                 JeiCleaner.LOGGER.warn("[JEI Cleaner] 隐藏物品失败", t);
             }
         }
+        if (!toShow.isEmpty()) {
+            try {
+                runtime.getIngredientManager().addIngredientsAtRuntime(
+                        mezz.jei.api.constants.VanillaTypes.ITEM_STACK, toShow);
+                HIDDEN_ITEMS.removeAll(toShow);
+            } catch (Throwable t) {
+                JeiCleaner.LOGGER.warn("[JEI Cleaner] 取消隐藏物品失败", t);
+            }
+        }
+        long tItems = System.nanoTime();
 
         // 整个配方分类隐藏（只有显式添加 category 规则时才会走到这里）
         for (RecipeType<?> type : selector.hiddenCategories()) {
@@ -260,10 +287,21 @@ public final class Cleaner {
             }
         }
 
+        long tEnd = System.nanoTime();
         lastHiddenRecipes = recipeCount;
         lastHiddenItems = itemCount;
         lastApplyOk = true;
-        lastApplyMs = (System.nanoTime() - start) / 1_000_000L;
+        lastApplyMs = (tEnd - start) / 1_000_000L;
+        // INFO 级别：默认日志就能看到，用来定位「卡几秒」到底卡在哪一段
+        JeiCleaner.LOGGER.info(
+                "[JEI Cleaner] 同步耗时 {}ms = 还原 {} + 选择器 {} + 扫描 {} + 隐藏 {} + 物品 {} + 分类/收尾 {}",
+                lastApplyMs,
+                (tRestore - t0) / 1_000_000L,
+                (tSelector - tRestore) / 1_000_000L,
+                (tScan - tSelector) / 1_000_000L,
+                (tHide - tScan) / 1_000_000L,
+                (tItems - tHide) / 1_000_000L,
+                (tEnd - tItems) / 1_000_000L);
         JeiCleaner.LOGGER.debug("[JEI Cleaner] 原版配方已隐藏 {} 条 / {} 个物品，用时 {}ms；自定义配方异步处理中={}",
                 recipeCount, itemCount, lastApplyMs, customRunning);
         if (!customRunning) {
@@ -577,6 +615,27 @@ public final class Cleaner {
 
     /** JEI 卸载 / 重载前，把它还原成我们没动过的样子 */
     public static synchronized void restore(IJeiRuntime runtime) {
+        restoreRecipes(runtime);
+        if (runtime != null && !HIDDEN_ITEMS.isEmpty()) {
+            try {
+                runtime.getIngredientManager().addIngredientsAtRuntime(
+                        mezz.jei.api.constants.VanillaTypes.ITEM_STACK, new ArrayList<>(HIDDEN_ITEMS));
+            } catch (Throwable t) {
+                JeiCleaner.LOGGER.debug("[JEI Cleaner] 还原隐藏物品失败: {}", t.toString());
+            }
+        }
+        HIDDEN_ITEMS.clear();
+    }
+
+    /**
+     * 只还原「配方 / 自定义配方 / 分类」这三块（都是 Set 操作，很便宜）。
+     *
+     * <p>物品**故意不在这里还原**：{@code addIngredientsAtRuntime} /
+     * {@code removeIngredientsAtRuntime} 会触发 JEI 重建物品列表和搜索后缀树，
+     * 是几秒级的大活。每次编辑都「全还原 + 全重藏」= 白重建两遍。
+     * 物品改用差集单独处理，见 {@code applyNow()} 里那段。
+     */
+    private static synchronized void restoreRecipes(IJeiRuntime runtime) {
         if (runtime != null && !HIDDEN.isEmpty()) {
             IRecipeManager manager = runtime.getRecipeManager();
             for (Map.Entry<RecipeType<?>, List<Object>> entry : HIDDEN.entrySet()) {
@@ -614,16 +673,14 @@ public final class Cleaner {
             }
         }
         HIDDEN_CATEGORIES.clear();
+    }
 
-        if (runtime != null && !HIDDEN_ITEMS.isEmpty()) {
-            try {
-                runtime.getIngredientManager().addIngredientsAtRuntime(
-                        mezz.jei.api.constants.VanillaTypes.ITEM_STACK, new ArrayList<>(HIDDEN_ITEMS));
-            } catch (Throwable t) {
-                JeiCleaner.LOGGER.debug("[JEI Cleaner] 还原隐藏物品失败: {}", t.toString());
-            }
+    /** 物品栈列表里有没有同一个物品（HIDDEN_ITEMS 里存的都是默认栈，比 item 就够） */
+    private static boolean holdsItem(List<ItemStack> list, ItemStack stack) {
+        for (ItemStack s : list) {
+            if (s.getItem() == stack.getItem()) return true;
         }
-        HIDDEN_ITEMS.clear();
+        return false;
     }
 
     /** runtime 消失（JEI 重载）时调用 */

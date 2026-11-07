@@ -8,7 +8,8 @@
     "ItemCombinerMenuMixin"
   ],
   "client": [
-    "RecipeManagerInternalMixin"
+    "RecipeManagerInternalMixin",
+    "RecipeGuiLogicMixin"
   ],
   "injectors": {
     "defaultRequire": 1

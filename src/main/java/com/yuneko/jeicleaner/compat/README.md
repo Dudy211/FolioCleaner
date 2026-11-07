@@ -18,7 +18,7 @@
 
 ---
 
-## 新增一个适配器：丢进来就行
+## 新增一个适配器
 
 ### 1. 如果目标工作台是 `ItemCombinerMenu` 的子类
 
@@ -26,7 +26,7 @@
 
 ### 2. 其它类型（自定义 Menu / BlockEntity）
 
-在 `compat/` 里新建一个类：
+新建 `XxxCraftGuard implements CraftGuard`：
 
 ```java
 public final class XxxCraftGuard implements CraftGuard {
@@ -38,24 +38,24 @@ public final class XxxCraftGuard implements CraftGuard {
 
     @Override
     public boolean blocks(Container inputs) {
-        // 读 inputs.getItem(i)，对照 Rules.serverRules() 里 action=remove 的规则
+        // 按需要读 inputs.getItem(i)，对照 Rules.serverRules() 里 action=remove 的规则
         // 返回 true = 这次合成无效
         return false;
     }
 }
 ```
 
-**不用注册**：`CraftGuards` 启动时会扫描本包，自动实例化所有 `CraftGuard` 实现
-（要求：`public` 类、`public` 无参构造）。
+**不用注册**：`CraftGuards` 启动时会扫描 `com.yuneko.jeicleaner.compat` 包，
+自动实例化所有 `CraftGuard` 实现（要求：`public` 类、`public` 无参构造）。
 
-丢进目录 → 重新编译 → 自动生效。日志会打印：
+丢进这个目录 → 重新编译 → 自动生效。日志会打印：
 
 ```
 [JEI Cleaner] 已加载 2 个合成守卫适配器
 [JEI Cleaner] 自动注册合成守卫: xxx
 ```
 
-（`CombinerCraftGuard` 仍保留在静态块里做兜底；同一个类只会注册一次。）
+（`CombinerCraftGuard` 仍保留在静态块里作为兜底；同类只会注册一次。）
 
 ### 3. 需要新的注入点？
 
@@ -65,7 +65,7 @@ public final class XxxCraftGuard implements CraftGuard {
 如果目标不是 `ItemCombinerMenu`：
 
 1. 新建 `mixin/XxxMenuMixin`，在生成结果 / 取出结果的方法末尾调用
-   `CraftGuards.isBlocked(container)`；
+   `CraftGuards.isBlocked(container, new XxxCraftGuard())`（或按类型过滤）；
 2. 在 `src/main/resources/jeicleaner.mixins.json` 的 `mixins` 数组里登记；
 3. 注入必须带 `require = 0`，目标结构变化时静默跳过，不能因此崩客户端。
 
@@ -77,4 +77,3 @@ public final class XxxCraftGuard implements CraftGuard {
 - **不崩**：任何异常都要吞掉并返回 `false`，守卫失败不能影响正常游戏
 - **范围限制**：这类工作台没有原版 RecipeType，只处理「范围不限类型」的规则；
   带类型限制的组直接跳过，避免误伤
-- **无状态**：自动发现会 new 一个单例，不要在适配器里存可变状态

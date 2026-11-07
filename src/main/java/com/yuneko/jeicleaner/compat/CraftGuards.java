@@ -26,8 +26,13 @@ import java.util.jar.JarFile;
  * {@code public class XxxGuard implements CraftGuard}（public 无参构造），
  * <b>不用改任何注册代码</b> —— 启动时会扫描本模组的 compat 包并自动实例化。
  *
- * <p>扫描同时支持：开发环境（目录 classpath）与打包后的 mod jar。
- * 任何一步失败都只记 debug 日志，不影响游戏启动。
+ * <p>扫描同时支持两种形态：
+ * <ul>
+ *   <li>开发环境 / 文件夹 classpath → 遍历目录下的 .class</li>
+ *   <li>打包后的 mod jar → 遍历 jar 条目</li>
+ * </ul>
+ *
+ * <p>任何一步失败都只记 debug 日志，不影响游戏启动。
  */
 public final class CraftGuards {
 
@@ -71,7 +76,7 @@ public final class CraftGuards {
         return false;
     }
 
-    /** 只询问指定适配器（Mixin 给自己的目标类型用） */
+    /** 只询问指定适配器（Mixin 给自己的目标类型用，避免串味） */
     public static boolean isBlocked(Container inputs, CraftGuard guard) {
         if (inputs == null || guard == null) return false;
         try {

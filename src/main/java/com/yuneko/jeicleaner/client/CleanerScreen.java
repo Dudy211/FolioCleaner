@@ -3,6 +3,8 @@ package com.yuneko.jeicleaner.client;
 import com.yuneko.jeicleaner.Cleaner;
 import com.yuneko.jeicleaner.ClientSettings;
 import com.yuneko.jeicleaner.ItemStats;
+import com.yuneko.jeicleaner.LazyPages;
+import com.yuneko.jeicleaner.client.CategoryStats;
 import com.yuneko.jeicleaner.Rule;
 import com.yuneko.jeicleaner.Rules;
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
@@ -48,7 +50,7 @@ import java.util.stream.Stream;
 public class CleanerScreen extends Screen {
 
     private enum Tab {
-        ITEM("物品"), MOD("模组"), RECIPE("配方");
+        ITEM("物品"), MOD("模组"), RECIPE("配方"), USAGE("毒瘤");
 
         final String label;
 
@@ -135,6 +137,8 @@ public class CleanerScreen extends Screen {
 
     /** 设置弹窗 */
     private boolean settingsOpen;
+    /** 优化设置弹窗（性能相关，和界面偏好分开） */
+    private boolean optimizeOpen;
     /** 范围弹窗当前是在给哪条规则改（-1 = 属性台默认值） */
     private int pickerForRule = -1;
 
@@ -148,6 +152,19 @@ public class CleanerScreen extends Screen {
 
     /** 物品页排序：false = 按 id，true = 按「被多少条配方使用」降序 */
     private boolean sortByUsage = false;
+
+    // ---------------------------------------------------------------- 毒瘤排行（页签）
+
+    /** 排行只留前 N 名：藏掉一个，下次重排会自动补上新的，不用一次列几万个 */
+    private static final int TOP_LIMIT = 100;
+    /** 毒瘤页点一行生成什么规则：hide / remove（管理员可切） */
+    private String topAction = Rule.ACTION_HIDE;
+    /** 毒瘤页两种视角：0 = 按物品（只统计 MC 配方），1 = 按分类（含模组自建配方） */
+    private int usageMode;
+    /** 分类视角的缓存 */
+    private List<CategoryStats.Row> usageCategories = List.of();
+    /** 上次加载排行时的 ItemStats.signature()，用来判断要不要重排 */
+    private int usageSig;
 
     /** 空 = 不限配方类型；可以是逗号分隔的多个类型（按工作方块选择时） */
     private String selectedType = "";
@@ -211,6 +228,7 @@ public class CleanerScreen extends Screen {
     private Button tabItemButton;
     private Button tabModButton;
     private Button tabRecipeButton;
+    private Button tabUsageButton;
     private Button ingredientButton;
     private Button itemButton;
 
@@ -308,15 +326,23 @@ public class CleanerScreen extends Screen {
             this.searchText = ClientSettings.lastSearch;
         }
         int tabY = panelY() + 22;
-        int tabW = 54;
+        // 4 个页签挤一行：36 宽 + 2 间隙，4 格用到 158px
+        // （手机上 GUI scale 4 时 panelW 只有 262，留够右边两个按钮的位置）
+        int tabW = 36;
+        int tabGap = 2;
         int tx = panelX() + 8;
 
         this.tabItemButton = addRenderableWidget(Button.builder(Component.literal(Tab.ITEM.label), b -> switchTab(Tab.ITEM))
                 .bounds(tx, tabY, tabW, 16).build());
         this.tabModButton = addRenderableWidget(Button.builder(Component.literal(Tab.MOD.label), b -> switchTab(Tab.MOD))
-                .bounds(tx + tabW + 4, tabY, tabW, 16).build());
+                .bounds(tx + (tabW + tabGap), tabY, tabW, 16).build());
         this.tabRecipeButton = addRenderableWidget(Button.builder(Component.literal(Tab.RECIPE.label), b -> switchTab(Tab.RECIPE))
-                .bounds(tx + (tabW + 4) * 2, tabY, tabW, 16).build());
+                .bounds(tx + (tabW + tabGap) * 2, tabY, tabW, 16).build());
+        this.tabUsageButton = addRenderableWidget(Button.builder(Component.literal(Tab.USAGE.label), b -> switchTab(Tab.USAGE))
+                .bounds(tx + (tabW + tabGap) * 3, tabY, tabW, 16).build());
+
+        int settingsW = 34;
+        int settingsX = panelX() + panelW() - 8 - settingsW;
 
         if (ClientSettings.admin) {
             addRenderableWidget(Button.builder(editTargetLabel(), b -> {
@@ -324,23 +350,30 @@ public class CleanerScreen extends Screen {
                 ClientSettings.editServer = editServer;
                 ClientSettings.touch();
                 b.setMessage(editTargetLabel());
-            }).bounds(panelX() + panelW() - 118 - 86, tabY, 82, 16).build());
+            }).bounds(settingsX - 3 - 52, tabY, 52, 16).build());
         }
 
-        addRenderableWidget(Button.builder(Component.literal("§7设置"), b -> {
+        addRenderableWidget(Button.builder(Component.literal("设置"), b -> {
             settingsOpen = !settingsOpen;
             if (settingsOpen) {
                 closeTypePicker();
                 closePartnerPicker();
                 ruleEditOpen = false;
             }
-        }).bounds(panelX() + panelW() - 118, tabY, 110, 16).build());
+        }).bounds(settingsX, tabY, settingsW, 16).build());
 
-        addRenderableWidget(Button.builder(keepLabel(), b -> {
-            keepMode = !keepMode;
-            b.setMessage(keepLabel());
-            setStatus(keepMode ? "模组页：点击 = 加入白名单（其余全部隐藏）" : "模组页：点击 = 隐藏该模组");
-        }).bounds(tx + (tabW + 4) * 3 + 6, tabY, 88, 16).build());
+        int optimizeW = 56;
+        addRenderableWidget(Button.builder(Component.literal("优化设置"), b -> {
+            optimizeOpen = !optimizeOpen;
+            if (optimizeOpen) {
+                settingsOpen = false;
+                closeTypePicker();
+                closePartnerPicker();
+                ruleEditOpen = false;
+                rangeEditorOpen = false;
+            }
+        }).bounds(settingsX - 3 - optimizeW, tabY, optimizeW, 16).build());
+
 
         this.search = new EditBox(this.font, listX(), panelY() + 42, listW(), 16, Component.literal("搜索"));
         this.search.setHint(Component.literal("搜索名称 / 拼音首字母 / @modid …"));
@@ -491,7 +524,9 @@ public class CleanerScreen extends Screen {
         if (tabItemButton != null) tabItemButton.active = tab != Tab.ITEM;
         if (tabModButton != null) tabModButton.active = tab != Tab.MOD;
         if (tabRecipeButton != null) tabRecipeButton.active = tab != Tab.RECIPE;
-        // 「原料 / 物品」只对物品规则有意义，模组页和配方页收起来
+        if (tabUsageButton != null) tabUsageButton.active = tab != Tab.USAGE;
+        // 「原料 / 物品」只在物品页有意义：毒瘤页的动作是固定的（只按原料下手），
+        // 留着这两个开关反而误导，收起
         boolean itemTab = tab == Tab.ITEM;
         if (ingredientButton != null) ingredientButton.visible = itemTab;
         if (itemButton != null) itemButton.visible = itemTab;
@@ -511,6 +546,7 @@ public class CleanerScreen extends Screen {
         entriesLoadedFor = tab;
         switch (tab) {
             case ITEM -> loadItems();
+            case USAGE -> loadUsage();
             case MOD -> loadMods();
             case RECIPE -> loadRecipes();
         }
@@ -519,13 +555,14 @@ public class CleanerScreen extends Screen {
     }
 
     private void loadItems() {
-        ItemStats.build();
+        // 只有「按用量排序」才需要全量统计；平时不白算这一遍（几万条配方 × 每条规则匹配）
+        if (sortByUsage) ItemStats.build();
         List<Entry> list = new ArrayList<>();
         for (ResourceLocation id : BuiltInRegistries.ITEM.keySet()) {
             Item item = BuiltInRegistries.ITEM.get(id);
             if (item == Items.AIR) continue;
             ItemStack stack = new ItemStack(item);
-            int used = ItemStats.usage(item);
+            int used = ItemStats.ready() ? ItemStats.usage(item) : 0;
             String sub = used > 0 ? id + "  U:" + used : id.toString();
             list.add(new Entry(Tab.ITEM, id.toString(),
                     Component.literal(stack.getHoverName().getString()), sub, stack));
@@ -537,6 +574,60 @@ public class CleanerScreen extends Screen {
             list.sort(Comparator.comparing(Entry::id));
         }
         entries.addAll(list);
+    }
+
+    /**
+     * 毒瘤排行：按「被多少条可见配方当原料使用」降序。
+     *
+     * <p>只统计当前还看得见的配方（{@link ItemStats#build()} 里已经排除被规则藏/删的），
+     * 所以藏掉一个毒瘤后，它自己会掉出榜，下一名自动补上来。
+     */
+    private void loadUsage() {
+        if (usageMode == 1) {
+            loadUsageCategories();
+            return;
+        }
+        ItemStats.build();
+        usageSig = ItemStats.signature();
+        List<Entry> list = new ArrayList<>();
+        for (Item item : ItemStats.topUsage(TOP_LIMIT)) {
+            String id = BuiltInRegistries.ITEM.getKey(item).toString();
+            ItemStack stack = new ItemStack(item);
+            int used = ItemStats.usage(item);
+            String sub = "用于 " + used + " 条配方 · 产出 " + ItemStats.output(item);
+            list.add(new Entry(Tab.USAGE, id,
+                    Component.literal(stack.getHoverName().getString()), sub, stack));
+        }
+        entries.addAll(list);
+    }
+
+    /**
+     * 分类视角：直接问 JEI「每个分类有多少条配方」。
+     *
+     * <p>为什么需要这个视角：{@code ItemStats} 只能看到 {@code mc.level.getRecipeManager()}，
+     * 那里只有真正的 MC Recipe。奥术铁砧那 4000+ 条是模组自建的 JEI 配方
+     * （不是 {@code Recipe} 实现），物品视角里一条都统计不到，而它恰恰是按 U 最容易炸的。
+     */
+    private void loadUsageCategories() {
+        usageCategories = CategoryStats.build();
+        usageSig = ItemStats.signature();
+        List<Entry> list = new ArrayList<>();
+        for (CategoryStats.Row row : usageCategories) {
+            list.add(new Entry(Tab.USAGE, row.uid(), row.title(),
+                    row.count() + " 条配方", row.icon()));
+        }
+        entries.addAll(list);
+    }
+
+    private void switchUsageMode(int mode) {
+        if (usageMode == mode) return;
+        usageMode = mode;
+        entriesLoaded = false;
+        ensureEntries();
+        rebuildFiltered();
+        setStatus(mode == 0
+                ? "毒瘤 · 按物品：只统计 MC 配方（数据包/原版）"
+                : "毒瘤 · 按分类：包含模组自建的 JEI 配方");
     }
 
     private void loadMods() {
@@ -735,6 +826,42 @@ public class CleanerScreen extends Screen {
                         ? "已加入白名单：" + entry.id() + "（其余模组配方将被隐藏）"
                         : "已隐藏模组：" + entry.id());
             }
+            case USAGE -> {
+                if (usageMode == 1) {
+                    // 分类视角：整类隐藏（可撤销，不做服务端删除）
+                    Rule rule = new Rule(Rule.TYPE_CATEGORY, entry.id());
+                    rule.action = Rule.ACTION_HIDE;
+                    if (editServer && ClientSettings.admin) {
+                        Rules.addServerRule(rule);
+                        Rules.pushServerRules();
+                    } else if (!Rules.add(rule)) {
+                        setStatus("已经有这条分类规则了：" + entry.name().getString());
+                        return;
+                    }
+                    setStatus("已隐藏分类：" + entry.name().getString() + "（右栏可撤销）");
+                    return;
+                }
+                // 物品视角：只按「原料」下手，产物配方和物品本体都留着
+                Rule rule = new Rule(Rule.TYPE_ITEM, entry.id());
+                rule.hideOutput = false;
+                rule.hideIngredient = true;
+                rule.hideItem = false;
+                rule.action = ClientSettings.admin ? topAction : Rule.ACTION_HIDE;
+                List<Rule.Range> ranges = new ArrayList<>();
+                ranges.add(new Rule.Range()); // 空类型 = 不限工作台
+                rule.ranges = ranges;
+                rule.syncLegacy();
+                if (editServer && ClientSettings.admin) {
+                    Rules.addServerRule(rule);
+                    Rules.pushServerRules();
+                } else if (!Rules.add(rule)) {
+                    setStatus("已经有同一套设置了：" + entry.name().getString());
+                    return;
+                }
+                boolean removed = Rule.ACTION_REMOVE.equals(rule.action);
+                setStatus((removed ? "已删除用到它的配方：" : "已隐藏用到它的配方：")
+                        + entry.name().getString());
+            }
             case RECIPE -> {
                 Rule rule = new Rule(Rule.TYPE_RECIPE, entry.id());
                 rule.action = defaultAction;
@@ -751,9 +878,17 @@ public class CleanerScreen extends Screen {
         this.renderBackground(gg);
         ensureEntries();
 
+        // 毒瘤页：规则一变就重排（藏掉一个，下一名要自动补上来）
+        if (tab == Tab.USAGE && entriesLoaded && entriesLoadedFor == Tab.USAGE
+                && ItemStats.signature() != usageSig) {
+            entriesLoaded = false;
+            ensureEntries();
+            rebuildFiltered();
+        }
+
         // 弹窗打开时整个主界面都不画：
         // 属性台的「隐藏/删除」是直接 drawString 的，不在 widget 列表里，光靠遮罩挡不住。
-        boolean modal = settingsOpen || ruleEditOpen || rangeEditorOpen
+        boolean modal = settingsOpen || optimizeOpen || ruleEditOpen || rangeEditorOpen
                 || partnerPickerOpen || typePickerOpen;
         if (!modal) {
             drawPanel(gg);
@@ -763,11 +898,19 @@ public class CleanerScreen extends Screen {
             drawFooter(gg);
 
             for (Renderable renderable : this.renderables) {
+                // Screen 默认的 renderWidgets 会过滤 visible，手写循环必须自己判，
+                // 否则 visible=false 的按钮只挡点击、照样画出来
+                if (renderable instanceof net.minecraft.client.gui.components.AbstractWidget widget
+                        && !widget.visible) {
+                    continue;
+                }
                 renderable.render(gg, mouseX, mouseY, partialTick);
             }
         }
 
-        if (settingsOpen) {
+        if (optimizeOpen) {
+            drawOptimize(gg, mouseX, mouseY);
+        } else if (settingsOpen) {
             drawSettings(gg, mouseX, mouseY);
         } else if (ruleEditOpen) {
             drawRuleEdit(gg, mouseX, mouseY);
@@ -799,7 +942,7 @@ public class CleanerScreen extends Screen {
         gg.drawString(this.font, counter, cx, y + 6, COLOR_DIM, false);
 
         if (Cleaner.hasPendingChanges()) {
-            String warn = Cleaner.isSyncing() ? "同步中" : "未同步";
+            String warn = Cleaner.isSyncing() ? "同步中" : "未同步·点同步";
             int ww = this.font.width(warn);
             gg.drawString(this.font, warn, cx - 10 - ww, y + 6, COLOR_ACCENT, false);
         }
@@ -809,7 +952,7 @@ public class CleanerScreen extends Screen {
         int x = listX(), y = listY(), w = listW(), h = listH();
         gg.fill(x - 1, y - 1, x + w + 1, y + h + 1, 0x30FFFFFF);
 
-        if (tab == Tab.RECIPE && Minecraft.getInstance().level == null) {
+        if ((tab == Tab.RECIPE || tab == Tab.USAGE) && Minecraft.getInstance().level == null) {
             gg.drawString(this.font, "§7需要先进入世界，才能读取配方列表。", x + 4, y + 4, COLOR_DIM, false);
             return;
         }
@@ -829,10 +972,13 @@ public class CleanerScreen extends Screen {
             if (hovered) gg.fill(x, rowY, x + w, rowY + ROW_H, COLOR_HOVER);
             else if (i % 2 == 1) gg.fill(x, rowY, x + w, rowY + ROW_H, COLOR_ALT);
 
-            String ruleType = entry.tab() == Tab.ITEM ? Rule.TYPE_ITEM
-                    : entry.tab() == Tab.MOD ? Rule.TYPE_MOD : Rule.TYPE_RECIPE;
+            String ruleType = entry.tab() == Tab.MOD ? Rule.TYPE_MOD
+                    : entry.tab() == Tab.RECIPE ? Rule.TYPE_RECIPE : Rule.TYPE_ITEM;
             boolean hidden = entry.tab() == Tab.MOD
                     ? hasRule(Rule.TYPE_MOD, entry.id()) || hasRule(Rule.TYPE_KEEP, entry.id())
+                    : entry.tab() == Tab.USAGE
+                    ? (usageMode == 1 ? hasRule(Rule.TYPE_CATEGORY, entry.id())
+                                      : hasIngredientRule(entry.id()))
                     : hasRule(ruleType, entry.id());
 
             int textX = x + 4;
@@ -887,6 +1033,7 @@ public class CleanerScreen extends Screen {
 
         switch (tab) {
             case ITEM -> drawPropItem(gg, x, y, h, edit, mouseX, mouseY, clickable);
+            case USAGE -> drawPropUsage(gg, x, y, h, mouseX, mouseY, clickable);
             case MOD -> drawPropMod(gg, x, y, h, edit, mouseX, mouseY, clickable);
             case RECIPE -> drawPropRecipe(gg, x, y, h);
         }
@@ -1007,6 +1154,68 @@ public class CleanerScreen extends Screen {
         return partner;
     }
 
+    /** 毒瘤页的属性台：视角切换（物品 / 分类）+ 动作说明 + 计数 */
+    private void drawPropUsage(GuiGraphics gg, int x, int y, int h,
+                               int mouseX, int mouseY, boolean clickable) {
+        // 视角切换
+        drawToggleBtn(gg, x + 4, y + 21, 44, 16, "物品", usageMode == 0,
+                clickable && inRect(mouseX, mouseY, x + 4, y + 21, 44, 16));
+        drawToggleBtn(gg, x + 50, y + 21, 44, 16, "分类", usageMode == 1,
+                clickable && inRect(mouseX, mouseY, x + 50, y + 21, 44, 16));
+        if (clickable) {
+            propHits.add(new PropHit(x + 4, y + 21, 44, 16, "usageItem"));
+            propHits.add(new PropHit(x + 50, y + 21, 44, 16, "usageCat"));
+        }
+
+        gg.fill(x + 4, y + 43, x + MID_W - 4, y + 44, COLOR_EDGE);
+
+        boolean itemMode = usageMode == 0;
+        gg.drawString(this.font, "点一行 =", x + 6, y + 47, COLOR_TEXT, false);
+        gg.drawString(this.font, itemMode ? "隐藏「用到" : "隐藏整个", x + 6, y + 57, COLOR_DIM, false);
+        gg.drawString(this.font, itemMode ? "它」的配方" : "配方分类", x + 6, y + 67, COLOR_DIM, false);
+        gg.drawString(this.font, itemMode ? "产物不动" : "规则里可撤销", x + 6, y + 79, COLOR_FAINT, false);
+
+        gg.fill(x + 4, y + 93, x + MID_W - 4, y + 94, COLOR_EDGE);
+
+        if (itemMode) {
+            boolean remove = Rule.ACTION_REMOVE.equals(topAction);
+            int by = y + 97;
+            if (ClientSettings.admin) {
+                drawToggleBtn(gg, x + 4, by, 44, 16, "隐藏", !remove,
+                        clickable && inRect(mouseX, mouseY, x + 4, by, 44, 16));
+                drawToggleBtn(gg, x + 50, by, 44, 16, "删除", remove,
+                        clickable && inRect(mouseX, mouseY, x + 50, by, 44, 16));
+                if (clickable) {
+                    propHits.add(new PropHit(x + 4, by, 44, 16, "hide"));
+                    propHits.add(new PropHit(x + 50, by, 44, 16, "remove"));
+                }
+            } else {
+                drawToggleBtn(gg, x + 4, by, MID_W - 8, 16, "隐藏", true, false);
+            }
+        } else {
+            gg.drawString(this.font, "分类视角", x + 6, y + 97, COLOR_INFO, false);
+            gg.drawString(this.font, "只隐藏", x + 6, y + 109, COLOR_FAINT, false);
+            gg.drawString(this.font, "不删除", x + 6, y + 119, COLOR_FAINT, false);
+        }
+
+        if (h >= 160) {
+            gg.fill(x + 4, y + 133, x + MID_W - 4, y + 134, COLOR_EDGE);
+            if (itemMode) {
+                gg.drawString(this.font, "可见配方", x + 6, y + 137, COLOR_FAINT, false);
+                gg.drawString(this.font, String.valueOf(ItemStats.totalRecipes()),
+                        x + 6, y + 148, COLOR_INFO, false);
+                gg.drawString(this.font, "只统计 MC", x + 6, y + 161, COLOR_FAINT, false);
+                gg.drawString(this.font, "配方", x + 6, y + 171, COLOR_FAINT, false);
+            } else {
+                gg.drawString(this.font, "分类", x + 6, y + 137, COLOR_FAINT, false);
+                gg.drawString(this.font, String.valueOf(usageCategories.size()),
+                        x + 6, y + 148, COLOR_INFO, false);
+                gg.drawString(this.font, "含自建", x + 6, y + 161, COLOR_FAINT, false);
+                gg.drawString(this.font, "配方", x + 6, y + 171, COLOR_FAINT, false);
+            }
+        }
+    }
+
     private void drawPropMod(GuiGraphics gg, int x, int y, int h, Rule edit,
                              int mouseX, int mouseY, boolean clickable) {
         boolean remove = edit != null
@@ -1046,11 +1255,22 @@ public class CleanerScreen extends Screen {
         }
 
         gg.fill(x + 4, y + 68, x + MID_W - 4, y + 69, COLOR_EDGE);
-        if (h >= 128) {
+
+        int ky = y + 72;
+        if (clickable && inRect(mouseX, mouseY, x + 4, ky, MID_W - 8, 14)) {
+            gg.fill(x + 4, ky, x + MID_W - 4, ky + 14, COLOR_HOVER);
+        }
+        if (clickable) propHits.add(new PropHit(x + 4, ky, MID_W - 8, 14, "keep"));
+        gg.drawString(this.font, "白名单", x + 6, ky + 3, COLOR_TEXT, false);
+        gg.drawString(this.font, keepMode ? "●" : "○", x + MID_W - 22, ky + 3,
+                keepMode ? COLOR_OK : COLOR_OFF, false);
+
+        gg.fill(x + 4, y + 88, x + MID_W - 4, y + 89, COLOR_EDGE);
+        if (h >= 146) {
             String[] tips = keepMode
                     ? new String[]{"白名单模式", "点击 = 只保留", "该模组", "", "其余全部隐藏"}
                     : new String[]{"点击左侧模组", "隐藏它全部配方", "", "产物/原料", "对整模组无效"};
-            int ty = y + 74;
+            int ty = y + 94;
             for (String tip : tips) {
                 if (tip.isEmpty()) {
                     ty += 4;
@@ -1191,14 +1411,28 @@ public class CleanerScreen extends Screen {
                     ClientSettings.touch();
                 }
                 case "ranges" -> openRangeEditor(-1);
+                case "usageItem" -> switchUsageMode(0);
+                case "usageCat" -> switchUsageMode(1);
+                case "keep" -> {
+                    keepMode = !keepMode;
+                    setStatus(keepMode ? "模组页：点击 = 加入白名单（其余全部隐藏）" : "模组页：点击 = 隐藏该模组");
+                }
                 case "hide" -> {
                     if (!ClientSettings.admin) return; // 普通玩家只能用「隐藏」
+                    if (tab == Tab.USAGE) {
+                        topAction = Rule.ACTION_HIDE;
+                        return;
+                    }
                     defaultAction = Rule.ACTION_HIDE;
                     ClientSettings.defaultAction = defaultAction;
                     ClientSettings.touch();
                 }
                 case "remove" -> {
                     if (!ClientSettings.admin) return;
+                    if (tab == Tab.USAGE) {
+                        topAction = Rule.ACTION_REMOVE;
+                        return;
+                    }
                     defaultAction = Rule.ACTION_REMOVE;
                     ClientSettings.defaultAction = defaultAction;
                     ClientSettings.touch();
@@ -2105,12 +2339,39 @@ public class CleanerScreen extends Screen {
 
     // ---------------------------------------------------------------- 设置弹窗
 
+    // ------------------------------------------------------------ 毒瘤排行
+
+    /** 是否已有「按原料隐藏该物品」的规则（排行里用来打亮颜色） */
+    private static boolean hasIngredientRule(String id) {
+        for (Rule r : Rules.all()) {
+            if (!r.enabled || !r.type.equals(Rule.TYPE_ITEM) || !r.target.equals(id)) continue;
+            if (r.hideIngredient) return true;
+        }
+        return false;
+    }
+
     private int settingsW() {
         return Math.min(panelW() - 40, 230);
     }
 
     private int settingsH() {
         return 108;
+    }
+
+    private int optimizeW() {
+        return Math.min(panelW() - 40, 230);
+    }
+
+    private int optimizeH() {
+        return 190;
+    }
+
+    private int optimizeX() {
+        return panelX() + (panelW() - optimizeW()) / 2;
+    }
+
+    private int optimizeY() {
+        return panelY() + (panelH() - optimizeH()) / 2;
     }
 
     private int settingsX() {
@@ -2136,11 +2397,112 @@ public class CleanerScreen extends Screen {
         gg.drawString(this.font, "搜索记忆", x + 12, y + 29, COLOR_TEXT, false);
         gg.drawString(this.font, ClientSettings.rememberSearch ? "●" : "○", x + w - 26, y + 29,
                 ClientSettings.rememberSearch ? COLOR_OK : COLOR_OFF, false);
-
         gg.drawString(this.font, "§8关掉后每次打开都是空搜索框", x + 12, y + 50, COLOR_DIM, false);
+        gg.drawString(this.font, "§8（性能相关选项在「优化设置」里）", x + 12, y + 62, COLOR_FAINT, false);
 
         drawToggleBtn(gg, x + 8, y + h - 26, 64, 18, "完成", false,
                 inRect(mouseX, mouseY, x + 8, y + h - 26, 64, 18));
+    }
+
+    /** 优化设置：只放性能 / 同步相关开关，每项都带「不支持就灰掉 + 悬浮说明」 */
+    private void drawOptimize(GuiGraphics gg, int mouseX, int mouseY) {
+        gg.flush();
+        gg.fill(0, 0, this.width, this.height, 0xF0121218);
+        int x = optimizeX(), y = optimizeY(), w = optimizeW(), h = optimizeH();
+        gg.fill(x, y, x + w, y + h, 0xF01C1C26);
+        gg.renderOutline(x, y, w, h, COLOR_EDGE);
+        gg.drawString(this.font, "§e优化设置", x + 8, y + 6, COLOR_TEXT, false);
+        String sub = "只影响性能，不影响规则内容";
+        gg.drawString(this.font, "§8" + sub, x + w - 8 - this.font.width(sub), y + 6, COLOR_FAINT, false);
+        gg.fill(x + 8, y + 19, x + w - 8, y + 20, COLOR_EDGE);
+
+        // ① 分页懒布局
+        boolean lazyOk = LazyPages.supported();
+        boolean lazyOn = lazyOk && ClientSettings.lazyPages;
+        boolean lazyHover = inRect(mouseX, mouseY, x + 8, y + 26, w - 16, 16);
+        if (lazyHover && lazyOk) gg.fill(x + 8, y + 26, x + w - 8, y + 42, COLOR_HOVER);
+        gg.drawString(this.font, "分页懒布局", x + 12, y + 29, lazyOk ? COLOR_TEXT : COLOR_FAINT, false);
+        gg.drawString(this.font, lazyOn ? "●" : "○", x + w - 26, y + 29,
+                lazyOn ? COLOR_OK : COLOR_OFF, false);
+        if (lazyOk) {
+            gg.drawString(this.font, "§8>128 条的分类只建当前页", x + 12, y + 48, COLOR_DIM, false);
+            gg.drawString(this.font, "§8仍可翻完全部，防按 U 炸内存", x + 12, y + 58, COLOR_FAINT, false);
+        } else {
+            gg.drawString(this.font, trim("不可用：" + LazyPages.reason(), w - 20),
+                    x + 12, y + 48, 0xFFB06A6A, false);
+            gg.drawString(this.font, "§8悬浮查看原因", x + 12, y + 58, COLOR_FAINT, false);
+        }
+
+        gg.fill(x + 8, y + 70, x + w - 8, y + 71, COLOR_EDGE);
+
+        // ② 自动同步
+        boolean autoHover = inRect(mouseX, mouseY, x + 8, y + 76, w - 16, 16);
+        if (autoHover) gg.fill(x + 8, y + 76, x + w - 8, y + 92, COLOR_HOVER);
+        gg.drawString(this.font, "自动同步", x + 12, y + 79, COLOR_TEXT, false);
+        gg.drawString(this.font, ClientSettings.autoSync ? "●" : "○", x + w - 26, y + 79,
+                ClientSettings.autoSync ? COLOR_OK : COLOR_OFF, false);
+        gg.drawString(this.font, ClientSettings.autoSync
+                        ? "§8改完约 0.4 秒自动重算" : "§8关着：要点「同步」才生效",
+                x + 12, y + 98, COLOR_DIM, false);
+        gg.drawString(this.font, "§8关掉可避免编辑时反复全量扫描", x + 12, y + 108, COLOR_FAINT, false);
+
+        gg.fill(x + 8, y + h - 34, x + w - 8, y + h - 33, COLOR_EDGE);
+        drawToggleBtn(gg, x + 8, y + h - 26, 64, 18, "完成", false,
+                inRect(mouseX, mouseY, x + 8, y + h - 26, 64, 18));
+
+        if (lazyHover) {
+            List<Component> lines = new ArrayList<>();
+            lines.add(Component.literal("§e分页懒布局"));
+            lines.add(Component.literal("§7大分类按 U 时，JEI 会把整个列表的布局"));
+            lines.add(Component.literal("§7一次性建完，条数一多就是卡死 + 内存耗尽。"));
+            lines.add(Component.literal("§7开启后只建当前页，仍然能翻完全部。"));
+            if (lazyOk) {
+                lines.add(Component.literal("§a可用 §8· JEI " + LazyPages.jeiVersion()));
+                lines.add(Component.literal("§8点击切换"));
+            } else {
+                lines.add(Component.literal("§c不可用 §8· JEI " + LazyPages.jeiVersion()));
+                lines.add(Component.literal("§7原因：" + LazyPages.reason()));
+            }
+            gg.renderComponentTooltip(this.font, lines, mouseX, mouseY);
+        } else if (autoHover) {
+            List<Component> lines = new ArrayList<>();
+            lines.add(Component.literal("§e自动同步"));
+            lines.add(Component.literal("§7开着：改完规则约 0.4 秒自动重算一次。"));
+            lines.add(Component.literal("§7关着：规则改动先记着，点顶部「同步」才生效。"));
+            lines.add(Component.literal("§8关掉的好处：连续编辑时不会一顿一顿地全量扫描。"));
+            gg.renderComponentTooltip(this.font, lines, mouseX, mouseY);
+        }
+    }
+
+    private boolean handleOptimizeClick(double mouseX, double mouseY) {
+        int x = optimizeX(), y = optimizeY(), w = optimizeW(), h = optimizeH();
+        if (mouseX < x || mouseX > x + w || mouseY < y || mouseY > y + h) {
+            optimizeOpen = false;
+            return true;
+        }
+        if (mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 26 && mouseY < y + 42) {
+            if (!LazyPages.supported()) {
+                setStatus("分页懒布局不可用：" + LazyPages.reason());
+                return true;
+            }
+            ClientSettings.lazyPages = !ClientSettings.lazyPages;
+            ClientSettings.touch();
+            setStatus(ClientSettings.lazyPages ? "分页懒布局：已开启" : "分页懒布局：已关闭");
+            return true;
+        }
+        if (mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 76 && mouseY < y + 92) {
+            ClientSettings.autoSync = !ClientSettings.autoSync;
+            ClientSettings.touch();
+            setStatus(ClientSettings.autoSync
+                    ? "自动同步：已开启（改完自动重算）"
+                    : "自动同步：已关闭（改完点「同步」才生效）");
+            return true;
+        }
+        if (mouseX >= x + 8 && mouseX <= x + 72 && mouseY >= y + h - 26 && mouseY < y + h - 8) {
+            optimizeOpen = false;
+            return true;
+        }
+        return true;
     }
 
     private boolean handleSettingsClick(double mouseX, double mouseY) {
@@ -2492,6 +2854,9 @@ public class CleanerScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (optimizeOpen) {
+            return handleOptimizeClick(mouseX, mouseY);
+        }
         if (settingsOpen) {
             return handleSettingsClick(mouseX, mouseY);
         }

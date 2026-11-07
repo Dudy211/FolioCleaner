@@ -1,17 +1,15 @@
 package com.yuneko.jeicleaner;
 
 import com.mojang.logging.LogUtils;
+import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.loading.FMLEnvironment;
 import org.slf4j.Logger;
 
 /**
- * JEI Cleaner —— JEI 配方显示 / 合成表管理器。
+ * JEI Cleaner —— JEI 配方显示管理器。
  *
- * <p>双端模组：
- * <ul>
- *   <li>客户端：把规则作用到 JEI（隐藏配方 / 物品）</li>
- *   <li>服务端：按 remove 规则真删 RecipeManager 条目，并拦截没有配方实体的自定义工作台</li>
- * </ul>
+ * <p>纯客户端模组：所有逻辑都只在客户端执行，专用服务器上加载时什么也不做。
  */
 @Mod(JeiCleaner.MODID)
 public class JeiCleaner {

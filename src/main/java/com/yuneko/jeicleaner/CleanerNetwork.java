@@ -16,8 +16,8 @@ import java.util.function.Supplier;
  *
  * <ul>
  *   <li>S2C {@link SyncRulesPacket}：登录时下发服务端规则 + 当前玩家是不是管理员</li>
- *   <li>C2S {@link UpdateServerRulesPacket}：管理员提交新规则，服务端校验 OP 权限 →
- *       写 server.json → 重新应用 → 广播给所有人</li>
+ *   <li>C2S {@link UpdateServerRulesPacket}：管理员在客户端点了「服务端」模式后提交新规则，
+ *       服务端校验 OP 权限 → 写 server.json → 重新应用 → 广播给所有人</li>
  * </ul>
  */
 public final class CleanerNetwork {

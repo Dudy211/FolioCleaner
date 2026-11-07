@@ -10,6 +10,7 @@ import net.minecraft.world.item.crafting.Recipe;
 
 import java.lang.reflect.Method;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +22,8 @@ import java.util.Map;
  * <ol>
  *   <li>普通 {@link Recipe}：按 id / 产物 / 原料匹配</li>
  *   <li>mod 自定义的 JEI 配方对象（比如 Iron's Spellbooks 的 {@code ArcaneAnvilJeiRecipe}，
- *       它根本不是 Recipe 接口的实现）：反射调 {@code getRecipeItems()} 拿三组 ItemStack</li>
+ *       它根本不是 Recipe 接口的实现）：反射调它的 {@code getRecipeItems()} 拿到
+ *       左输入 / 右输入 / 输出三组 ItemStack，再按物品匹配</li>
  * </ol>
  */
 public final class RuntimeFilter {
@@ -55,7 +57,7 @@ public final class RuntimeFilter {
         } catch (Throwable t) {
             hidden = false;
         }
-        if (CACHE.size() > 20000) CACHE.clear();
+        if (CACHE.size() > 20000) CACHE.clear(); // 动态插件每次都造新对象，避免无限增长
         CACHE.put(recipe, !hidden);
         return !hidden;
     }
@@ -65,10 +67,14 @@ public final class RuntimeFilter {
         return recipe != null && invoke(recipe, "getRecipeItems") != null;
     }
 
-    /** 非 Recipe 对象：调 getRecipeItems()，约定 a=主输入 / b=副输入 / c=输出 */
+    /**
+     * 非 Recipe 对象的匹配：调 {@code getRecipeItems()}，按约定拿三组物品
+     * （a = 主输入，b = 副输入，c = 输出）。
+     */
     private static boolean matchesCustom(Object recipe, Object jeiType) {
         Object items = invoke(recipe, "getRecipeItems");
         if (items == null) {
+            // 退一步：直接扫一遍字段，有些 mod 的配方对象没有 getRecipeItems
             return matchesFields(recipe, jeiType, null, null, null);
         }
         Object inputA = invoke(items, "a");
@@ -99,15 +105,16 @@ public final class RuntimeFilter {
                 if (!a && !b) continue;
 
                 for (java.util.List<String> group : range.groups()) {
-                    if (group.isEmpty()) return true;
+                    if (group.isEmpty()) return true; // 没有搭配 = 不限
 
                     boolean all = true;
                     for (String partner : group) {
                         boolean ok;
                         if (a ^ b) {
-                            // 目标只在一边：搭配必须在另一边
+                            // 目标只在一边：搭配必须落在另一边
                             ok = a ? containsPartner(inputB, partner) : containsPartner(inputA, partner);
                         } else {
+                            // 两边都含目标：任一侧接受即可
                             ok = containsPartner(inputA, partner) || containsPartner(inputB, partner);
                         }
                         if (!ok) {
@@ -115,7 +122,7 @@ public final class RuntimeFilter {
                             break;
                         }
                     }
-                    if (all) return true;
+                    if (all) return true; // 这一组「与」全部满足
                 }
             }
         }
@@ -152,6 +159,15 @@ public final class RuntimeFilter {
         return false;
     }
 
+    private static boolean containsAnyPartner(Object holder, java.util.List<String> partners) {
+        if (partners == null || partners.isEmpty()) return true;
+        for (String partner : partners) {
+            if (containsPartner(holder, partner)) return true;
+        }
+        return false;
+    }
+
+    /** holder（Collection<ItemStack> / ItemStack）里是否有符合 partner（物品 id 或 #标签）的栈 */
     private static boolean containsPartner(Object holder, String partner) {
         if (holder == null || partner == null || partner.isBlank()) return false;
         try {
@@ -195,6 +211,7 @@ public final class RuntimeFilter {
         }
     }
 
+    /** 清空缓存（规则变化时由 Mixin 侧调用也可以，这里靠 revision 自动处理） */
     public static void invalidate() {
         CACHE.clear();
         seenRevision = -1;
