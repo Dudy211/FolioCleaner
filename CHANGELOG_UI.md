@@ -573,3 +573,12 @@ removeIngredientsAtRuntime(全部要隐藏的物品);    // 又移除一遍
 `Cleaner.appliedFingerprint` 记录上次应用时的内容。内容一样就不再提示。
 
 `revision` 保留 —— 它仍然用于「规则可能变了」的缓存失效（`ItemStats` / `RuntimeFilter`）。
+
+## 1.38.1 · 指令回执补「要 apply」
+
+默认手动同步后，`/jeicleaner add*/remove/toggle/clear` 改完也不会立刻生效。
+所有回执统一追加 `（/jeicleaner apply 生效）`，避免"加了但没反应"的误会。
+
+顺带把 MC百科正文的指令段从 `[code]` 换成两列表格（Tab 分隔），
+并把 `list / remove / toggle` 和 `export / clear / reload / apply` 这两行拆开逐条写作用——
+原来那两行在百科里渲染成空单元格。

@@ -152,6 +152,9 @@ public final class CleanerCommands {
         return Command.SINGLE_SUCCESS;
     }
 
+    /** 指令改完不会自动生效（默认手动同步），统一在回执里提示一句 */
+    private static final String APPLY_HINT = " §7（/jeicleaner apply 生效）";
+
     private static int addItem(ResourceLocation id, String type, boolean hideOutput, boolean hideIngredient,
                                boolean hideItem) {
         Rule rule = new Rule(Rule.TYPE_ITEM, id.toString());
@@ -160,32 +163,32 @@ public final class CleanerCommands {
         rule.hideItem = hideItem;
         rule.recipeType = type;
         Rules.add(rule);
-        return feedback("已添加：" + rule.describe());
+        return feedback("已添加：" + rule.describe() + APPLY_HINT);
     }
 
     private static int addMod(String modid, String type) {
         Rule rule = new Rule(Rule.TYPE_MOD, modid);
         rule.recipeType = type;
         Rules.add(rule);
-        return feedback("已添加：" + rule.describe());
+        return feedback("已添加：" + rule.describe() + APPLY_HINT);
     }
 
     private static int addRecipe(ResourceLocation id) {
         Rule rule = new Rule(Rule.TYPE_RECIPE, id.toString());
         Rules.add(rule);
-        return feedback("已添加：" + rule.describe());
+        return feedback("已添加：" + rule.describe() + APPLY_HINT);
     }
 
     private static int addKeep(String modid) {
         Rule rule = new Rule(Rule.TYPE_KEEP, modid);
         Rules.add(rule);
-        return feedback("已添加：" + rule.describe() + " §7（白名单模式下其余模组配方都会被隐藏）");
+        return feedback("已添加：" + rule.describe() + " §7（白名单模式下其余模组配方都会被隐藏）" + APPLY_HINT);
     }
 
     private static int addCategory(ResourceLocation type) {
         Rule rule = new Rule(Rule.TYPE_CATEGORY, type.toString());
         Rules.add(rule);
-        return feedback("已添加：" + rule.describe());
+        return feedback("已添加：" + rule.describe() + APPLY_HINT);
     }
 
     private static int verify() {
@@ -301,14 +304,14 @@ public final class CleanerCommands {
         Rule rule = Rules.get(index - 1);
         if (rule == null) return feedback("序号 " + index + " 不存在。");
         Rules.remove(index - 1);
-        return feedback("已删除：" + rule.describe());
+        return feedback("已删除：" + rule.describe() + APPLY_HINT);
     }
 
     private static int toggle(int index) {
         Rule rule = Rules.get(index - 1);
         if (rule == null) return feedback("序号 " + index + " 不存在。");
         Rules.toggleEnabled(index - 1);
-        return feedback((rule.enabled ? "已启用：" : "已停用：") + rule.target);
+        return feedback((rule.enabled ? "已启用：" : "已停用：") + rule.target + APPLY_HINT);
     }
 
     private static int export() {
@@ -320,7 +323,7 @@ public final class CleanerCommands {
     private static int clear() {
         int n = Rules.size();
         Rules.clear();
-        return feedback("已清空 " + n + " 条规则。");
+        return feedback("已清空 " + n + " 条规则。" + APPLY_HINT);
     }
 
     private static int reload() {
