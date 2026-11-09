@@ -7,7 +7,10 @@ modId="${mod_id}"
 version="${version}"
 displayName="${mod_name}"
 authors="${mod_author}"
-description='''JEI 配方显示管理器：按物品 / 模组 / 配方 ID 隐藏 JEI 中的配方，支持限定工作台类型；游戏内 /jeicleaner 指令打开图形界面。'''
+description='''洁册灵 · Folio Cleaner
+按物品 / 模组 / 配方 ID / 分类隐藏或删除配方，支持限定工作台类型、重复物品归并、引用排行统计。
+配方级隐藏：JEI 与 REI 实时生效，EMI 在初始化期生效（改规则需重开游戏）。
+图形界面：/foliocleaner（短别名 /folio）。'''
 
 [[dependencies.${mod_id}]]
     modId="forge"

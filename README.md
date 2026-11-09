@@ -1,194 +1,110 @@
-# JEI Cleaner
+# Folio Cleaner · 洁册灵
 
-> MC 1.20.1 · Forge 47.x · 双端（客户端隐藏 + 服务端真删）· 依赖 JEI 15.x
+> MC 1.20.1 · Forge 47.x · 双端 · **2.0.0 是一次全面重写，不兼容 1.x**
+>
+> 配方浏览器支持 **JEI / REI / EMI**（EMI 的配方过滤只在初始化期生效）
 
-按物品 / 模组 / 配方隐藏或**真正删除** JEI 与合成表里的配方，游戏内图形界面操作。
-为整合包与服务器设计：服务端是唯一真源，规则登录时统一下发。
+按物品 / 模组 / 配方 ID / 分类**隐藏**或**真正删除**配方；把多个模组重复添加的同一种物品**归并成一份**；
+统计谁被最多配方当原料；还给「配方不在 `RecipeManager` 里」的特殊工作台（铁砧、奥术铁砧…）提供适配器机制。
 
 ---
 
-## 两种模式
+## ⚠️ 2.0.0 与 1.x 不兼容
 
-| 模式 | 谁执行 | 效果 |
+| 项 | 1.x | 2.0.0 |
 |---|---|---|
-| **隐藏**（hide） | 客户端 JEI | JEI 里看不到；玩家记得配方仍然能合成 |
-| **删除**（remove） | 服务端 | 配方从 `RecipeManager` 移除 → 看不到、摆不出、机器不生产 |
+| mod id | `jeicleaner` | **`foliocleaner`** |
+| 配置目录 | `config/jeicleaner/` | **`config/foliocleaner/`** |
+| 数据包目录 | `world/datapacks/jeicleaner/` | **`world/datapacks/foliocleaner/`** |
+| 客户端指令 | `/jeicleaner`、`/jc` | **`/foliocleaner`**（短别名 `/folio`） |
+| 服务端指令 | `/jeicleanerserver` | **`/folioserver`** |
 
-「删除」分三层覆盖：
-
-| 层 | 原版配方 | 铁砧类（奥术铁砧） | 科技包机器 |
-|---|---|---|---|
-| JEI 看不到 | ✅ | ✅ | ✅ |
-| 摆不出产物 | ✅ | ✅ 拦结果槽 | ✅ 若走 RecipeManager |
-| 机器不生产 | ✅ | — | ✅ 同上 |
+升级时：旧配置**不会**自动迁移（2.0 是全新版本）。如果世界里还有旧的数据包目录，
+服务端启动会打一条 WARN 提醒你删掉它 —— 那是存档里的东西，模组不会替你删。
 
 ---
 
-## 规则模型
+## 三种「统一」实现（把重复物品归并成一份）
 
-一条规则可以有多组「范围」，组之间是**或**；每组下面可以有多条「搭配」，
-框内是**与**、框外是**或**：
+| 模式 | 做法 | 运行时开销 | 适用 |
+|---|---|---|---|
+| **改配方**（默认） | 反射替换 `Ingredient` 的物品缓存数组 = 原物品 ∪ 同组成员 | **0**（之后就是原版数组循环） | 单人 / 集成服 / 专用服（服务端也应用） |
+| **运行时** | `Ingredient#test` 查表放宽匹配，显示不变 | 一次 identity 查表 | 同上，更保守 |
+| **数据包** | 生成 datapack（tag 合并 + 配方 `item→tag` 改写） | 0 | 想要可回滚 / 手动检查 |
 
-```
-(奥术铁砧 + 剑 + 法球) 或 (锻造台 + 护甲)
-```
+> 「改配方 / 运行时」要求**服务端与客户端都装**，并且两边的适配器必须一致 —— 见下。
+
+## 适配器（给特殊工作台）
+
+`config/foliocleaner/adapters/` 一个目录，按扩展名自动分类：
+
+| 类型 | 写法 | 生效 |
+|---|---|---|
+| `*.json` | 声明式：菜单类名 + 结果槽 / 输入槽 | 热加载 |
+| `*.lua` | 脚本式：`function blocks(ctx)`，沙箱 + 20ms 预算 | 热加载 |
+| `*.jar` | 代码式：`ServiceLoader` 找 `CraftGuard` 实现 | **需要重启游戏** |
 
 ```json
 {
-  "type": "item",
-  "target": "irons_spellbooks:fire_upgrade_orb",
-  "action": "remove",
-  "ranges": [
-    {
-      "type": "irons_spellbooks:arcane_anvil",
-      "partnerGroups": [["#forge:swords", "irons_spellbooks:fire_upgrade_orb"]]
-    }
-  ]
+  "id": "arcane_anvil",
+  "name": "奥术铁砧",
+  "comment": "悬浮提示里显示这句",
+  "scope": { "menu": "irons_spellbooks.ArcaneAnvilMenu" },
+  "probe": { "result": [2], "inputs": [0, 1] },
+  "action": "clearResult"
 }
 ```
 
-- `type`：`item` / `mod` / `recipe` / `keep`（白名单） / `category`（整类隐藏）
-- `action`：`hide` / `remove`
-- `ranges`：至少一组；`type` 空 = 不限配方类型
-- `partnerGroups`：外层或、内层与
+```lua
+name   = "奥术铁砧"
+result = {2}
 
-旧字段 `recipeType` / `partner` 仍可读（当作第一组）。
-
----
-
-## 图形界面
-
-```
-/jeicleaner      或   /jc
+function blocks(ctx)
+  return ctx:slot(0) == "minecraft:iron_ingot"
+     and ctx:slot(1) == "minecraft:diamond"
+end
 ```
 
-- 顶部页签：**物品 / 模组 / 配方**
-- 中间「属性台」按页签变化：
-  - 物品：产物 / 原料 / 范围（多组编辑器）/ 隐藏·删除
-  - 模组：范围 / 隐藏·删除
-  - 配方：灰字教程
-- 右栏规则：**点行 = 启用/停用**，`···` = 编辑，`×` = 删除
-- 配方页悬浮条目会直接渲染**该配方的 JEI 布局**（合成台 3×3、熔炉、切石机……）
+### 调试面板
 
----
+游戏内按 **F7**（可在「选项 → 控制 → 按键绑定 → 洁册灵」改）：
 
-## 安装
+- 任何容器界面上叠加**槽位编号**（结果槽绿色）
+- 可拖动的悬浮窗：菜单类名 / 槽位表 / 鼠标指向的槽位
+- `[复制骨架]` 直接把当前界面的 json 适配器骨架塞进剪贴板
+- `[演练]` 开启后适配器**只打日志不清结果**，验证完再关
 
-1. Forge 1.20.1（47.x）
-2. JEI 15.x
-3. 把 jar 放进 `mods/`（整合包建议客户端 + 服务端都放）
+### 客户端 / 服务端一致性
 
-JEI 是可选依赖：没装 JEI 时不会崩，只是没有隐藏效果（服务端删除仍然可用）。
+- 登录时服务端下发规则，并比对**适配器指纹**（`kind|id|内容哈希` 的 sha1 前 16 位）
+- 指纹不一致 → 按 `config/foliocleaner/server-settings.json` 处理：
+
+```json
+{ "adapterCheck": "kick" }
+```
+
+`kick`（默认）直接断开并列出**缺少 / 多出 / 内容不同**；`warn` 只提示；`off` 不检查。
+开关状态（enabled）由**服务端**下发，普通玩家改不了。
 
 ---
 
 ## 指令
 
 ```
-/jeicleaner                                 打开 GUI
-/jeicleaner add item <物品id> [配方类型]      隐藏/删除该物品的配方
-/jeicleaner add itemonly <物品id>            只从 JEI 物品列表移除
-/jeicleaner add mod <modid> [配方类型]        整个模组
-/jeicleaner add keep <modid>                 白名单：只保留这个模组
-/jeicleaner add recipe <配方id>               单条配方
-/jeicleaner add type <配方类型>               整个分类
-/jeicleaner list / remove <n> / toggle <n>
-/jeicleaner export / clear / reload / apply
-/jeicleaner verify                          隐藏自检
-/jeicleaner diag <物品id>                    诊断某物品的配方命中情况
+/foliocleaner                 打开图形界面
+/foliocleaner debug [on|off|dump|list|dryrun]
+/foliocleaner viewers         看 JEI / REI / EMI 三家的适配状态
+/foliocleaner unify [status|gen|rollback|wipe]
+/folioserver unify ...        服务端（控制台 / OP）生成或撤销数据包
 ```
-
----
-
-## 配置文件
-
-```
-config/jeicleaner/
-├── server.json           服务端权威规则（服主配置，登录时下发给所有玩家）
-├── client.json           玩家本地规则（只影响自己）
-└── client-settings.json  GUI 偏好（属性台模板、搜索记忆等）
-```
-
-旧版 `config/jeicleaner.json` 会自动迁移到 `server.json`。
-
-服务端删除生效时日志会打印：
-
-```
-[JEI Cleaner] 服务端已删除 128 条配方（规则 3 条）：ars_nouveau 18 / mekanism 42 / minecraft 68
-```
-
----
-
-## 兼容：自定义工作台
-
-有些工作台的合成逻辑写在 Menu / BlockEntity 里，没有配方实体（例如
-Iron's Spellbooks 的奥术铁砧）。这类工作台通过 `compat/` 下的**适配器**拦截：
-
-```
-src/main/java/com/yuneko/jeicleaner/compat/
-├── CraftGuard.java          接口
-├── CraftGuards.java         注册表
-├── CombinerCraftGuard.java  内置：ItemCombinerMenu 家族（铁砧类）
-├── ItemUtil.java            物品 / 标签匹配
-└── README.md                怎么新增适配器
-```
-
-新增一种工作台：写一个 `CraftGuard` 实现 → 在 `CraftGuards` 静态块注册 →
-（如果不是 `ItemCombinerMenu` 子类）再加一个 Mixin 调用它。
-
----
 
 ## 构建
 
 ```bash
-JAVA_HOME=<jdk17> GRADLE_USER_HOME=<gradle 缓存> \
-  ./gradlew build --offline
+# 需要 JDK 17；compile_only_depend/ 里要有 JEI 和 EMI 的 jar（不随仓库发布）
+./gradlew build
 ```
-
-需要的本地依赖（不随仓库提交）：
-
-| 目录 | 内容 |
-|---|---|
-| `compile_only_depend/` | JEI 15.20.0.106 的 jar |
-| `mixin-libs/` | `mixin-processor.jar`（Mixin 0.8.5 annotation processor） |
-
-产物：`build/libs/jeicleaner-forge-1.20.1-<version>.jar`
-
----
-
-## 目录
-
-```
-src/main/java/com/yuneko/jeicleaner/
-├── Rule.java / Rules.java        规则模型与持久化
-├── Selector.java                 客户端 JEI 隐藏（原版配方）
-├── Cleaner.java                  应用规则到 JEI（含自定义配方）
-├── RecipeRemover.java            服务端真删 RecipeManager 条目
-├── RuntimeFilter.java            非 Recipe 的 JEI 配方判断
-├── ServerCraftGuard.java         compat 的兼容入口
-├── CleanerNetwork.java           规则同步
-├── ServerEvents.java             服务端生命周期
-├── compat/                       自定义工作台适配器
-├── client/                       GUI（CleanerScreen / PinyinIndex / 指令）
-└── mixin/                        RecipeManagerInternal / ItemCombinerMenu
-```
-
----
 
 ## 许可
 
 MIT
-
----
-
-## 性能与优化（1.31+）
-
-| 功能 | 位置 | 作用 |
-|---|---|---|
-| **毒瘤排行** | 第 4 个页签「毒瘤」 | 按「被多少条配方当原料用」排序；点一行 = 一键隐藏用到它的全部配方。属性台可切「物品 / 分类」两种视角 —— **分类视角连模组自建的 JEI 配方也统计**（奥术铁砧 4000+ 条就是这么冒出来的） |
-| **分页懒布局** | 优化设置 | JEI 原本会把一个分类的**整个列表**逐条建布局（`LazySortedRecipeLayoutList` 只懒排序）。>128 条时改成只建当前页，**仍然能翻完全部**，防按 U 变 OOM。跟 JEI 版本耦合，不支持会自动灰掉并给出原因 |
-| **手动同步** | 优化设置 | 默认关掉自动同步：改完规则点「同步」才生效，避免连续编辑时反复全量扫描 |
-| **同步耗时日志** | 日志 INFO | `同步耗时 Nms = 还原 a + 选择器 b + 扫描 c + 隐藏 d + 物品 e + 分类/收尾 f` |
-
-物品隐藏改成**差集更新**（只对变化的部分调 `removeIngredientsAtRuntime`），
-避免每次编辑都让 JEI 重建两遍物品索引 + 搜索后缀树。

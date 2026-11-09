@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.yuneko.foliocleaner.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "foliocleaner.refmap.json",
+  "mixins": [
+    "ItemCombinerMenuMixin",
+    "IngredientMixin",
+    "ContainerMenuMixin"
+  ],
+  "client": [
+    "RecipeManagerInternalMixin",
+    "RecipeGuiLogicMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

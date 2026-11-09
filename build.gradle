@@ -8,7 +8,8 @@ version = project.version
 group = project.group
 
 base {
-    archivesName = "${mod_id}-forge-${minecraft_version}"
+    // 产物文件名跟产品名走（mod id 是历史值，见 gradle.properties 注释）
+    archivesName = "foliocleaner-forge-${minecraft_version}"
 }
 
 java {
@@ -29,8 +30,9 @@ minecraft {
 }
 
 mixin {
-    add sourceSets.main, "${mod_id}.refmap.json"
-    config "${mod_id}.mixins.json"
+    // 文件名跟包名/产品名走（mod id 仍是历史值 jeicleaner，不能改）
+    add sourceSets.main, "foliocleaner.refmap.json"
+    config "foliocleaner.mixins.json"
 }
 
 repositories {
@@ -45,6 +47,9 @@ dependencies {
 
     // JEI：编译期依赖（运行期由玩家安装的 JEI 提供）
     compileOnly fileTree(dir: 'compile_only_depend', includes: ['*.jar'])
+
+    // LuaJ（Lua 适配器引擎）：跟着我们的 jar 一起发（shade 进去，见下面的 jar 块）
+    implementation files('libs/luaj-jse-3.0.1.jar')
 
     compileOnly 'org.spongepowered:mixin:0.8.5'
     annotationProcessor files('mixin-libs/mixin-processor.jar')
@@ -76,9 +81,15 @@ tasks.named('processResources', ProcessResources).configure {
 }
 
 jar {
+    // 把 LuaJ 的类摊平进我们的 jar（它没有 META-INF 签名，安全）
+    from(zipTree('libs/luaj-jse-3.0.1.jar')) {
+        exclude 'META-INF/**'
+        exclude 'javax/**'
+    }
     manifest {
         attributes([
-                'MixinConfigs'          : "${mod_id}.mixins.json",
+                // ★必须是磁盘上真实的配置文件名（mod id 是历史值 jeicleaner，不能拿来拼）
+                'MixinConfigs'          : "foliocleaner.mixins.json",
                 'Specification-Title'   : mod_name,
                 'Specification-Vendor'  : mod_author,
                 'Specification-Version' : project.jar.archiveVersion,
