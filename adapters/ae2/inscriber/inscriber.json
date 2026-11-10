@@ -1,0 +1,28 @@
+// ============================================================
+// AE2 Inscriber（铭文机 / 压印器） —— json 声明式适配器（双保险）
+// 菜单类（FQCN）: appeng.menu.implementations.InscriberMenu
+// 置信度: 高（1.20.1 源码 addSlot 顺序核实：上板/下板/材料/产出）
+// 槽位: 0 = 上压印板，1 = 下压印板，2 = 中间材料，3 = 产出（OutputSlot）
+// 依据: Applied-Energistics-2@forge/1.20.1 InscriberMenu.java:77 / :83 / :90 / :96
+// 注：配方本身已注册在 RecipeManager（普通「删除 / 隐藏」规则就能覆盖），
+//     本适配器是**双保险**：万一别的模组手工放了结果槽、或规则只删了配方表里的条目，
+//     这里还能在输入命中「删除」规则时把结果槽清掉。
+{
+  "id": "ae2_inscriber",
+  "name": "AE2·铭文机",
+  "comment": "上板(0)/下板(1)/材料(2)命中「删除」规则时清空产出槽(3)",
+  "scope": {
+    "menu": "appeng.menu.implementations.InscriberMenu"
+  },
+  "probe": {
+    "result": [
+      3
+    ],
+    "inputs": [
+      0,
+      1,
+      2
+    ]
+  },
+  "action": "clearResult"
+}

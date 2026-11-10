@@ -65,6 +65,15 @@ public final class UnifyRuntime {
     private static int appliedRevision = Integer.MIN_VALUE;
     private static String appliedMode = "";
 
+    /**
+     * 服务端下发的重复组（{@link GroupSync} 文本）；{@code null} = 没收到（单人 / 老服务端）。
+     *
+     * <p><b>连服务器时以它为准</b>：{@code rewrite} / {@code match} 改的是「原料能接受哪些物品」，
+     * 双端各扫一份组就可能不一致（客户端的 {@code dup-overrides.json} 在专用服务器上不存在），
+     * 那会变成「界面说能合、服务端说不能」。所以有服务端那份就用服务端那份。
+     */
+    private static String serverGroups;
+
     private UnifyRuntime() {
     }
 
@@ -77,6 +86,46 @@ public final class UnifyRuntime {
 
     public static boolean matchActive() {
         return matchActive;
+    }
+
+    /**
+     * 收到服务端下发的重复组（登录 / 广播时）。空文本 = 服务端没给，客户端自行扫描。
+     *
+     * <p>换了数据源必须让 {@link #applyIfNeeded} 重跑一次，所以把上次的 revision 清掉。
+     */
+    public static void setServerGroups(String text) {
+        String next = (text == null || text.isBlank()) ? null : text;
+        if (java.util.Objects.equals(next, serverGroups)) return;
+        serverGroups = next;
+        appliedRevision = Integer.MIN_VALUE;
+        if (next != null) {
+            FolioCleaner.LOGGER.info("[Folio Cleaner] 已收到服务端重复组：{} 组（{}），统一以服务端为准",
+                    GroupSync.groupCount(next), GroupSync.fingerprint(next));
+        }
+        // 组数据可能在「登录后的那次 apply」之后才到（两个包谁先谁后不确定），
+        // 所以这里主动再排一次，别让第一次同步用的是本地扫出来的组。
+        try {
+            com.yuneko.foliocleaner.Cleaner.requestApplyDelayed(2);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 当前用的是不是服务端那份组数据（界面/指令展示用） */
+    public static boolean usingServerGroups() {
+        return serverGroups != null;
+    }
+
+    /** 当前生效的组数 / 服务端下发的组数 / 被改动的原料条数（属性台展示用） */
+    public static int groupCount() {
+        return groupItems.size();
+    }
+
+    public static int serverGroupCount() {
+        return serverGroups == null ? 0 : GroupSync.groupCount(serverGroups);
+    }
+
+    public static int affectedCount() {
+        return rewriteApplied ? ORIGINAL.size() : EXTRA.size();
     }
 
     /** 规则变了就重建一次（幂等；同 revision 直接返回） */
@@ -116,7 +165,11 @@ public final class UnifyRuntime {
      */
     public static void applyOnServer(net.minecraft.server.MinecraftServer server, String mode) {
         if (server == null) return;
-        if (!"rewrite".equals(mode) && !"match".equals(mode)) return;
+        if (!"rewrite".equals(mode) && !"match".equals(mode)) {
+            // 切到「数据包」/关掉：服务端这边也不能留着旧的加宽
+            deactivate();
+            return;
+        }
         try {
             buildGroupsFrom(server.overworld());
             restore();
@@ -155,6 +208,18 @@ public final class UnifyRuntime {
         rewriteApplied = false;
     }
 
+    /**
+     * 彻底关掉运行时统一（切到「数据包」/ 关掉功能时调）。
+     *
+     * <p>只调 {@link #restore()} 不够：那个 memo（{@code appliedRevision} / {@code appliedMode}）还留着，
+     * 之后切回 {@code rewrite} 且规则没变时会撞上「同 revision → 直接 return」，**配方再也不会被加宽**。
+     */
+    public static void deactivate() {
+        restore();
+        appliedRevision = Integer.MIN_VALUE;
+        appliedMode = "";
+    }
+
     // ---------------------------------------------------------------- 组
 
     private static void buildGroups() {
@@ -162,6 +227,17 @@ public final class UnifyRuntime {
     }
 
     private static void buildGroupsFrom(net.minecraft.world.level.Level level) {
+        // 连服务器时优先用服务端那份（双端一致；见 setServerGroups 的注释）
+        if (serverGroups != null) {
+            Map<String, List<Item>> byGroup = GroupSync.groups(serverGroups);
+            Map<Item, String> byItem = new java.util.HashMap<>();
+            for (Map.Entry<String, List<Item>> e : byGroup.entrySet()) {
+                for (Item item : e.getValue()) byItem.put(item, e.getKey());
+            }
+            itemToGroup = byItem;
+            groupItems = byGroup;
+            return;
+        }
         Map<Item, String> byItem = new java.util.HashMap<>();
         Map<String, List<Item>> byGroup = new java.util.LinkedHashMap<>();
         try {

@@ -1,0 +1,27 @@
+// ============================================================
+// 匠魂 Part Builder（部件铸造机） —— json 声明式适配器（双保险）
+// 菜单类（FQCN）: slimeknights.tconstruct.tables.menu.PartBuilderContainerMenu
+// 置信度: 高（1.20.1 源码 addSlot 顺序核实：产出槽第一个加）
+// 槽位: 0 = 产出（LazyResultSlot），1 = 模具（PatternSlot），2 = 材料（MaterialSlot）
+// 依据: TinkersConstruct@1.20.1 PartBuilderContainerMenu.java:34 / :36 / :37
+// 注：配方本身已注册在 RecipeManager（普通「删除 / 隐藏」规则就能覆盖），
+//     本适配器是**双保险**：万一别的模组手工放了结果槽、或规则只删了配方表里的条目，
+//     这里还能在输入命中「删除」规则时把结果槽清掉。
+{
+  "id": "tinkers_part_builder",
+  "name": "匠魂·部件铸造机",
+  "comment": "模具(1)或材料(2)命中「删除」规则时清空产出槽(0)",
+  "scope": {
+    "menu": "slimeknights.tconstruct.tables.menu.PartBuilderContainerMenu"
+  },
+  "probe": {
+    "result": [
+      0
+    ],
+    "inputs": [
+      1,
+      2
+    ]
+  },
+  "action": "clearResult"
+}

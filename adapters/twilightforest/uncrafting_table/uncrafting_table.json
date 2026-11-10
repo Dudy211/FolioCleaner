@@ -1,0 +1,24 @@
+// ============================================================
+// 暮色森林（Twilight Forest） 拆解台 Uncrafting Table —— json 声明式适配器
+// 菜单类（FQCN）: twilightforest.inventory.UncraftingMenu
+// 置信度: 高（菜单类名与槽位布局已由人类按 1.20.1 源码核实）
+// 为什么不走 RecipeManager:
+//   拆解是「反向」计算——遍历配方表找「产出物 == 输入物」的配方倒推材料
+//   （另有注册在配方表里的自定义 UncraftingRecipe）。删掉某一条正向配方后，
+//   其它能产出同物品的配方、或自定义拆解配方仍然有效，普通「删配方」规则
+//   拦不全，必须用适配器在输入命中「删除」规则时清空结果槽。
+// 槽位（人类核实）:
+//   0   = 输入（UncraftingInputContainer / tinkerInput）
+//   1   = 结果（UncraftingResultSlot / tinkerResult）
+//   2-10  = 拆解矩阵 uncraftingMatrix（不可见）
+//   11-19 = 装配矩阵 assemblyMatrix
+//   20+   = 玩家背包
+// ============================================================
+{
+  "id": "uncrafting_table",
+  "name": "暮色森林拆解台",
+  "comment": "拆解台输入槽(0)命中「删除」规则的物品时清空结果槽(1)。拆解走配方表反查，删配方本身拦不全，此适配器是拦截手段",
+  "scope": { "menu": "twilightforest.inventory.UncraftingMenu" },
+  "probe": { "result": [1], "inputs": [0] },
+  "action": "clearResult"
+}

@@ -147,6 +147,10 @@ public class CleanerScreen extends Screen {
     private boolean adaptersOpen;
     /** 标题栏这一帧有没有画「适配器」按钮（窄窗口时收进优化设置） */
     private boolean adapterButtonShown;
+    /** 适配器弹窗：三栏各自的滚动行数 */
+    private final int[] adapterScroll = new int[3];
+    /** 适配器弹窗：正在拖第几栏的滑条（-1 = 没在拖） */
+    private int draggingAdapterBar = -1;
     /** 重复组展开面板（atom 写的自包含类） */
     private DupPanel dupPanel;
     private String dupPanelKey;
@@ -412,9 +416,7 @@ public class CleanerScreen extends Screen {
         this.headerEditShown = headerEdit;
         if (headerEdit) {
             addRenderableWidget(Button.builder(editTargetLabel(), b -> {
-                editServer = !editServer;
-                ClientSettings.editServer = editServer;
-                ClientSettings.touch();
+                switchEditTarget();
                 b.setMessage(editTargetLabel());
             }).bounds(editX, tabY, editW, 16).build());
         }
@@ -1352,7 +1354,39 @@ public class CleanerScreen extends Screen {
         if (h < 190) return;
 
         gg.fill(x + 4, y + 100, x + MID_W - 4, y + 101, COLOR_EDGE);
-        gg.drawString(this.font, "统一数据包", x + 6, y + 104, COLOR_TEXT, false);
+
+        // ★这里必须按「统一实现方式」分叉：只有 datapack 才在讲数据包，
+        //   rewrite / match 是运行时改配方，摆三个数据包按钮会让人以为没生效。
+        boolean dp = "datapack".equals(ClientSettings.unifyMode);
+        boolean match = "match".equals(ClientSettings.unifyMode);
+        gg.drawString(this.font, dp ? "统一数据包" : (match ? "统一·运行时" : "统一·改配方"),
+                x + 6, y + 104, COLOR_TEXT, false);
+
+        if (!dp) {
+            boolean fromServer = com.yuneko.foliocleaner.UnifyRuntime.usingServerGroups();
+            int groups = com.yuneko.foliocleaner.UnifyRuntime.groupCount();
+            int affected = com.yuneko.foliocleaner.UnifyRuntime.affectedCount();
+            int ry = y + 118;
+            gg.drawString(this.font, trim("组 " + groups + (fromServer ? "（服务端）" : "（本地）"), MID_W - 12),
+                    x + 6, ry, fromServer ? COLOR_OK : COLOR_DIM, false);
+            gg.drawString(this.font, trim("影响 " + affected + " 条原料", MID_W - 12),
+                    x + 6, ry + 10, COLOR_DIM, false);
+            if (clickable && inRect((int) mouseX, (int) mouseY, x + 4, ry - 2, MID_W - 8, 22)) {
+                List<Component> tip = new ArrayList<>();
+                tip.add(Component.literal("§e统一数据来源"));
+                tip.add(Component.literal("§7" + (fromServer
+                        ? "服务端登录时下发了重复组，统一以它为准（双端一致）。"
+                        : "没收到服务端的重复组，本地自己扫描（单人 / 老服务端）。")));
+                tip.add(Component.literal("§8改实现方式：优化设置"));
+                gg.renderComponentTooltip(this.font, tip, mouseX, mouseY);
+            }
+            if (h >= 250) {
+                gg.drawString(this.font, "不写数据包，", x + 6, ry + 24, COLOR_FAINT, false);
+                gg.drawString(this.font, "改完点「同步」", x + 6, ry + 34, COLOR_FAINT, false);
+                gg.drawString(this.font, "就生效", x + 6, ry + 44, COLOR_FAINT, false);
+            }
+            return;
+        }
 
         int by = y + 118;
         boolean genHover = clickable && inRect((int) mouseX, (int) mouseY, x + 4, by, 44, 16);
@@ -1616,6 +1650,10 @@ public class CleanerScreen extends Screen {
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (draggingAdapterBar >= 0) {
+            scrollAdapterFromMouse(draggingAdapterBar, mouseY);
+            return true;
+        }
         if (draggingTypeBar) {
             scrollTypeFromMouse(mouseY);
             return true;
@@ -1641,6 +1679,7 @@ public class CleanerScreen extends Screen {
         draggingRuleBar = false;
         draggingPartnerBar = false;
         draggingTypeBar = false;
+        draggingAdapterBar = -1;
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
@@ -2677,6 +2716,11 @@ public class CleanerScreen extends Screen {
                     new java.util.LinkedHashMap<>(DupOverrides.load());
             map.put(key, dupPanel.result());
             DupOverrides.save(map);
+            // 覆盖层变了 → 请服务端重发一次组数据，否则要重登才对齐（服务端那份是权威）
+            try {
+                com.yuneko.foliocleaner.CleanerNetwork.requestGroups();
+            } catch (Throwable ignored) {
+            }
             setStatus("已保存重复组设置：" + key);
         } catch (Throwable t) {
             setStatus("保存失败：" + t.getClass().getSimpleName());
@@ -2928,6 +2972,46 @@ public class CleanerScreen extends Screen {
         return panelY() + (panelH() - adaptersH()) / 2;
     }
 
+    /** 适配器弹窗第 c 栏的矩形 {x,y,w,h}（宽屏左右排，窄屏上下排） */
+    private int[] adapterColumnRect(int c) {
+        int x = adaptersX(), y = adaptersY(), w = adaptersW(), h = adaptersH();
+        boolean wide = w >= 380;
+        int colW = wide ? (w - 16 - 8) / 3 : w - 16;
+        int top = y + 32;
+        int cx = wide ? x + 8 + c * (colW + 4) : x + 8;
+        int cy = wide ? top : top + c * ((h - 64) / 3);
+        int ch = wide ? (h - top + y - 64) : ((h - 64) / 3) - 4;
+        return new int[]{cx, cy, colW, ch};
+    }
+
+    /** 适配器三栏的类别 id（0=json / 1=lua / 2=jar） */
+    private static String adapterKind(int c) {
+        if (c == 0) return com.yuneko.foliocleaner.compat.AdapterDir.KIND_JSON;
+        if (c == 1) return com.yuneko.foliocleaner.compat.AdapterDir.KIND_LUA;
+        return com.yuneko.foliocleaner.compat.AdapterDir.KIND_JAR;
+    }
+
+    /**
+     * 适配器第 c 栏的行区：{行起点 y, 可见行数, 最大滚动}。
+     *
+     * <p>绘制、滚轮、滑条拖动三处共用这一份几何 —— 以前是各算一遍，
+     * 一旦某一处改了偏移，另外两处就会「点了没反应」。
+     */
+    private int[] adapterRows(int c) {
+        int[] r = adapterColumnRect(c);
+        int rows = Math.max(0, (r[3] - 42) / 11);
+        int size = com.yuneko.foliocleaner.compat.AdapterDir.of(adapterKind(c)).size();
+        return new int[]{r[1] + 36, rows, Math.max(0, size - rows)};
+    }
+
+    /** 适配器滑条：按鼠标 Y 换算滚动位置 */
+    private void scrollAdapterFromMouse(int c, double mouseY) {
+        int[] info = adapterRows(c);
+        if (info[2] <= 0 || info[1] <= 0) return;
+        float ratio = (float) ((mouseY - info[0]) / (double) Math.max(1, info[1] * 11));
+        adapterScroll[c] = Math.max(0, Math.min(info[2], Math.round(ratio * info[2])));
+    }
+
     /** 适配器页：三块（声明式 json / 脚本 lua / 代码 jar），每块一个「打开文件夹」+ 列表 */
     private void drawAdapters(GuiGraphics gg, int mouseX, int mouseY) {
         gg.flush();
@@ -2938,6 +3022,16 @@ public class CleanerScreen extends Screen {
         gg.drawString(this.font, "§e适配器", x + 8, y + 6, COLOR_TEXT, false);
         gg.drawString(this.font, "§8统一目录：config/foliocleaner/adapters/（按扩展名自动分类）",
                 x + 8, y + 19, COLOR_FAINT, false);
+
+        // 管理员：这里也能切「改哪个端」（和标题栏那个是同一个状态）
+        boolean showEdit = ClientSettings.admin;
+        int editW = 56, editX = x + w - 8 - editW, editY = y + 3;
+        if (showEdit) {
+            boolean hv = inRect((int) mouseX, (int) mouseY, editX, editY, editW, 12);
+            if (hv) gg.fill(editX, editY, editX + editW, editY + 12, COLOR_HOVER);
+            gg.drawString(this.font, "§7改:" + (editServer ? "§c服务端" : "§a客户端"),
+                    editX + 2, editY + 2, COLOR_TEXT, false);
+        }
 
         boolean wide = w >= 380;
         int colW = wide ? (w - 16 - 8) / 3 : w - 16;
@@ -2968,8 +3062,12 @@ public class CleanerScreen extends Screen {
                 gg.drawString(this.font, "§8（空）", cx + 6, rowY, COLOR_FAINT, false);
             }
             int rows = Math.max(0, (ch - 42) / 11);
-            for (int i = 0; i < Math.min(rows, list.size()); i++) {
-                var e = list.get(i);
+            int maxScroll = Math.max(0, list.size() - rows);
+            if (adapterScroll[c] > maxScroll) adapterScroll[c] = maxScroll;
+            if (adapterScroll[c] < 0) adapterScroll[c] = 0;
+            int start = adapterScroll[c];
+            for (int i = 0; i < Math.min(rows, list.size() - start); i++) {
+                var e = list.get(start + i);
                 boolean hovered = inRect((int) mouseX, (int) mouseY, cx + 4, rowY, colW - 8, 11);
                 if (hovered) gg.fill(cx + 4, rowY, cx + colW - 4, rowY + 11, COLOR_HOVER);
                 gg.drawString(this.font, (e.enabled() ? "§a● " : "§8○ ") + trim(e.name(), colW - 20),
@@ -2992,7 +3090,18 @@ public class CleanerScreen extends Screen {
                 rowY += 11;
             }
             if (list.size() > rows) {
-                gg.drawString(this.font, "§8…+" + (list.size() - rows), cx + 6, cy + ch - 12, COLOR_FAINT, false);
+                gg.drawString(this.font, "§8" + (start + 1) + "-" + Math.min(list.size(), start + rows)
+                        + "/" + list.size() + " §7滚轮", cx + 6, cy + ch - 12, COLOR_FAINT, false);
+                // 右侧 2px 滑条：能按住拖（触屏/模拟器上滚轮不好使）
+                if (rows > 0) {
+                    int barX = cx + colW - 3;
+                    int barTop = cy + 36;
+                    int barH = rows * 11;
+                    int thumbH = Math.max(10, barH * rows / Math.max(rows, list.size()));
+                    int thumbY = barTop + (int) ((long) (barH - thumbH) * start / Math.max(1, maxScroll));
+                    gg.fill(barX, barTop, barX + 2, barTop + barH, 0x30FFFFFF);
+                    gg.fill(barX, thumbY, barX + 2, thumbY + thumbH, 0xA0FFFFFF);
+                }
             }
         }
 
@@ -3017,9 +3126,17 @@ public class CleanerScreen extends Screen {
         int x = adaptersX(), y = adaptersY(), w = adaptersW(), h = adaptersH();
         if (mouseX < x || mouseX > x + w || mouseY < y || mouseY > y + h) {
             adaptersOpen = false;
+            draggingAdapterBar = -1;
             return true;
         }
         int by = y + h - 26;
+        if (ClientSettings.admin) {
+            int editW = 56, editX = x + w - 8 - editW, editY = y + 3;
+            if (inRect((int) mouseX, (int) mouseY, editX, editY, editW, 12)) {
+                switchEditTarget();
+                return true;
+            }
+        }
         if (inRect((int) mouseX, (int) mouseY, x + 6, by, 80, 18)) {
             openAdaptersFolder();
             return true;
@@ -3032,6 +3149,7 @@ public class CleanerScreen extends Screen {
         }
         if (inRect((int) mouseX, (int) mouseY, x + w - 50, by, 44, 18)) {
             adaptersOpen = false;
+            draggingAdapterBar = -1;
             return true;
         }
 
@@ -3049,9 +3167,22 @@ public class CleanerScreen extends Screen {
             int rowY = cy + 36;
             var list = com.yuneko.foliocleaner.compat.AdapterDir.of(kinds[c]);
             int rows = Math.max(0, (ch - 42) / 11);
-            for (int i = 0; i < Math.min(rows, list.size()); i++) {
+            int maxScroll = Math.max(0, list.size() - rows);
+            int start = Math.min(adapterScroll[c], maxScroll);
+            if (start < 0) start = 0;
+
+            // 滑条优先命中（最右 5px）；行命中区到 colW-4 为止，基本不重叠
+            if (list.size() > rows && rows > 0
+                    && mouseX >= cx + colW - 5 && mouseX <= cx + colW - 1
+                    && mouseY >= rowY && mouseY <= rowY + rows * 11) {
+                draggingAdapterBar = c;
+                scrollAdapterFromMouse(c, mouseY);
+                return true;
+            }
+
+            for (int i = 0; i < Math.min(rows, list.size() - start); i++) {
                 if (inRect((int) mouseX, (int) mouseY, cx + 4, rowY, colW - 8, 11)) {
-                    var e = list.get(i);
+                    var e = list.get(start + i);
                     if (!ClientSettings.admin) {
                         setStatus("适配器开关由服务端决定（管理员可改）");
                         return true;
@@ -3067,8 +3198,68 @@ public class CleanerScreen extends Screen {
         return true;
     }
 
-    /** 打开统一适配器目录（打不开就把路径丢进剪贴板） */
-    private void openAdaptersFolder() {
+    /**
+     * 切换「改哪个端」，并把所有依赖端的界面状态刷新一遍。
+     *
+     * <p>不刷新的话会出现"切到服务端了，左栏还显示着刚才客户端那份列表"的错位感
+     * —— 列表虽然是从 {@code Rules.all()} 现算的，但滚动位置、过滤结果和缓存的条目都是旧的。
+     */
+    private void switchEditTarget() {
+        editServer = !editServer;
+        ClientSettings.editServer = editServer;
+        ClientSettings.touch();
+        // 列表/过滤全部重建，滚动回顶部
+        listScroll = 0;
+        ruleScroll = 0;
+        entriesLoaded = false;
+        try {
+            ensureEntries();
+            rebuildFiltered();
+        } catch (Throwable ignored) {
+        }
+        setStatus(editServer
+                ? "规则改动会写到服务端（需要管理员权限）"
+                : "规则改动只写本地（客户端）");
+    }
+
+    /**
+     * 统一实现方式能不能改。
+     *
+     * <ul>
+     *   <li>单人 / 集成服务器：恒可（自己就是服主）</li>
+     *   <li>多人服：管理员 **且** 处于「改:服务端」模式</li>
+     * </ul>
+     */
+    private boolean canEditUnifyMode() {
+        if (Minecraft.getInstance().getSingleplayerServer() != null) return true;
+        return ClientSettings.admin && editServer;
+    }
+
+    /**
+     * 改统一实现方式。**服务端权威**：单人直接写 server-settings.json 并重应用；
+     * 多人服交给服务端（OP 2 校验），由服务端写盘 + 广播。
+     */
+    private void applyUnifyMode(String mode) {
+        ClientSettings.unifyMode = mode;
+        ClientSettings.touch();
+        var server = Minecraft.getInstance().getSingleplayerServer();
+        if (server != null) {
+            com.yuneko.foliocleaner.ServerSettings.unifyMode = mode;
+            com.yuneko.foliocleaner.ServerSettings.save();
+            server.execute(() -> {
+                com.yuneko.foliocleaner.UnifyRuntime.applyOnServer(server, mode);
+                com.yuneko.foliocleaner.CleanerNetwork.broadcast(server);
+            });
+            // ★改完立刻生效：光写设置不会触发任何 apply（以前切到数据包要等下一次改规则才生成）
+            com.yuneko.foliocleaner.Cleaner.requestApplyDelayed(2);
+            setStatus("统一实现方式：" + unifyModeLabel(mode) + "（已写入服务端设置）");
+            return;
+        }
+        com.yuneko.foliocleaner.CleanerNetwork.setUnifyMode(mode);
+        setStatus("统一实现方式：" + unifyModeLabel(mode) + "（已提交给服务端）");
+    }
+
+    /** 打开统一适配器目录（打不开就把路径丢进剪贴板） */    private void openAdaptersFolder() {
         java.nio.file.Path dir = com.yuneko.foliocleaner.compat.AdapterDir.folder();
         try {
             net.minecraft.Util.getPlatform().openFile(dir.toFile());
@@ -3104,15 +3295,25 @@ public class CleanerScreen extends Screen {
         gg.drawString(this.font, "§8" + sub, x + w - 8 - this.font.width(sub), y + 6, COLOR_FAINT, false);
         gg.fill(x + 8, y + 19, x + w - 8, y + 20, COLOR_EDGE);
 
-        // ① 分页懒布局
-        boolean lazyOk = LazyPages.supported();
+        // ① 分页懒布局（★JEI 自带时要明说，不然用户以为我们没做）
+        boolean lazyBuiltin = LazyPages.builtin();
+        boolean lazyOk = !lazyBuiltin && LazyPages.supported();
         boolean lazyOn = lazyOk && ClientSettings.lazyPages;
         boolean lazyHover = inRect((int) mouseX, (int) mouseY, x + 8, y + 26, w - 16, 16);
         if (lazyHover && lazyOk) gg.fill(x + 8, y + 26, x + w - 8, y + 42, COLOR_HOVER);
-        gg.drawString(this.font, "分页懒布局", x + 12, y + 29, lazyOk ? COLOR_TEXT : COLOR_FAINT, false);
-        gg.drawString(this.font, lazyOn ? "●" : "○", x + w - 26, y + 29,
-                lazyOn ? COLOR_OK : COLOR_DOT_OFF, false);
-        if (lazyOk) {
+        gg.drawString(this.font, "分页懒布局", x + 12, y + 29,
+                lazyBuiltin ? COLOR_DIM : (lazyOk ? COLOR_TEXT : COLOR_FAINT), false);
+        if (lazyBuiltin) {
+            String tag = "JEI 自带";
+            gg.drawString(this.font, "§a" + tag, x + w - 8 - this.font.width(tag), y + 29, COLOR_OK, false);
+        } else {
+            gg.drawString(this.font, lazyOn ? "●" : "○", x + w - 26, y + 29,
+                    lazyOn ? COLOR_OK : COLOR_DOT_OFF, false);
+        }
+        if (lazyBuiltin) {
+            gg.drawString(this.font, "§a当前 JEI 自己按页懒建布局", x + 12, y + 48, COLOR_OK, false);
+            gg.drawString(this.font, "§8本模组的补丁不启用（避免重复包一层）", x + 12, y + 58, COLOR_FAINT, false);
+        } else if (lazyOk) {
             gg.drawString(this.font, "§8>128 条的分类只建当前页", x + 12, y + 48, COLOR_DIM, false);
             gg.drawString(this.font, "§8仍可翻完全部，防按 U 炸内存", x + 12, y + 58, COLOR_FAINT, false);
         } else {
@@ -3144,22 +3345,32 @@ public class CleanerScreen extends Screen {
         gg.drawString(this.font, "大分类排序", x + 12, y + 127, sortOk ? COLOR_TEXT : COLOR_FAINT, false);
         gg.drawString(this.font, sortOn ? "●" : "○", x + w - 26, y + 127,
                 sortOn ? COLOR_OK : COLOR_DOT_OFF, false);
-        gg.drawString(this.font, sortOk ? "§8只排前 128 条，顺序前几页准" : "§8需要先开「分页懒布局」",
+        gg.drawString(this.font, sortOk ? "§8只排前 128 条，顺序前几页准" : (LazyPages.builtin()
+                        ? "§8JEI 自带懒布局时本项无效" : "§8需要先开「分页懒布局」"),
                 x + 12, y + 146, COLOR_DIM, false);
         gg.drawString(this.font, "§8构建量有硬上限，不会 OOM", x + 12, y + 156, COLOR_FAINT, false);
 
         gg.fill(x + 8, y + 166, x + w - 8, y + 167, COLOR_EDGE);
 
-        // ④ 统一实现方式（三选一）
-        gg.drawString(this.font, "统一实现方式", x + 12, y + 172, COLOR_TEXT, false);
+        // ④ 统一实现方式（三选一，★由服务端决定：非管理员 / 非「改:服务端」模式时灰掉）
+        boolean canEditMode = canEditUnifyMode();
+        gg.drawString(this.font, "统一实现方式", x + 12, y + 172, canEditMode ? COLOR_TEXT : COLOR_DIM, false);
+        if (!canEditMode) {
+            String lock = "服务端定";
+            gg.drawString(this.font, "§8" + lock, x + w - 8 - this.font.width(lock), y + 172, COLOR_FAINT, false);
+        }
         String[] modes = {"datapack", "rewrite", "match"};
         int bw = 68;
         for (int i = 0; i < modes.length; i++) {
             int bx = x + 8 + i * (bw + 4);
             boolean on = modes[i].equals(ClientSettings.unifyMode);
-            boolean hv = inRect((int) mouseX, (int) mouseY, bx, y + 184, bw, 16) && unifyModeImplemented(modes[i]);
+            boolean hv = canEditMode && inRect((int) mouseX, (int) mouseY, bx, y + 184, bw, 16)
+                    && unifyModeImplemented(modes[i]);
             drawToggleBtn(gg, bx, y + 184, bw, 16, unifyModeLabel(modes[i]), on, hv);
-            if (hv) {
+            if (!canEditMode) {
+                gg.fill(bx, y + 184, bx + bw, y + 200, 0x60000000);   // 灰掉的那层
+            }
+            if (inRect((int) mouseX, (int) mouseY, bx, y + 184, bw, 16)) {
                 List<Component> tip = new ArrayList<>();
                 tip.add(Component.literal("§e统一实现：" + unifyModeLabel(modes[i])));
                 tip.add(Component.literal(unifyModeDesc(modes[i])));
@@ -3168,11 +3379,20 @@ public class CleanerScreen extends Screen {
                     tip.add(Component.literal("§7服务端与客户端都要装，且适配器要一致"));
                     tip.add(Component.literal("§8规则一变就自动重建，之后零额外开销"));
                 }
+                if (!canEditMode) {
+                    tip.add(Component.literal("§c由服务端决定：当前 " + unifyModeLabel(ClientSettings.unifyMode)));
+                    tip.add(Component.literal(ClientSettings.admin
+                            ? "§8切到「改:服务端」模式后可改"
+                            : "§8需要管理员（OP 2）才能改"));
+                    tip.add(Component.literal("§8专用服：/folioserver mode <值>"));
+                }
                 gg.renderComponentTooltip(this.font, tip, mouseX, mouseY);
             }
         }
-        gg.drawString(this.font, trim(unifyModeDesc(ClientSettings.unifyMode), w - 20),
-                x + 12, y + 206, COLOR_FAINT, false);
+        gg.drawString(this.font, trim(canEditMode
+                        ? unifyModeDesc(ClientSettings.unifyMode)
+                        : "§8由服务端决定 · 改它要「改:服务端」模式",
+                w - 20), x + 12, y + 206, COLOR_FAINT, false);
 
         // ⑤ 交叉物品：用「双 tag 临时 tag」包装
         boolean crossHover = inRect((int) mouseX, (int) mouseY, x + 8, y + 218, w - 16, 14);
@@ -3246,6 +3466,10 @@ public class CleanerScreen extends Screen {
             return true;
         }
         if (mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 26 && mouseY < y + 42) {
+            if (LazyPages.builtin()) {
+                setStatus("当前 JEI（" + LazyPages.jeiVersion() + "）自带按页懒布局，无需开启");
+                return true;
+            }
             if (!LazyPages.supported()) {
                 setStatus("分页懒布局不可用：" + LazyPages.reason());
                 return true;
@@ -3275,14 +3499,22 @@ public class CleanerScreen extends Screen {
                     : "自动同步：已关闭（改完点「同步」才生效）");
             return true;
         }
-        // 统一实现方式：三个并排按钮
+        // 统一实现方式：三个并排按钮（由服务端决定，改不了就提示原因）
         String[] modes = {"datapack", "rewrite", "match"};
         for (int i = 0; i < modes.length; i++) {
             int bx = x + 8 + i * 72;
             if (mouseX >= bx && mouseX <= bx + 68 && mouseY >= y + 184 && mouseY <= y + 200) {
-                ClientSettings.unifyMode = modes[i];
-                ClientSettings.touch();
-                setStatus("统一实现方式：" + unifyModeLabel(modes[i]));
+                if (!canEditUnifyMode()) {
+                    setStatus(ClientSettings.admin
+                            ? "统一实现方式由服务端决定（切到「改:服务端」模式才能改）"
+                            : "统一实现方式由服务端决定（需要 OP 2）");
+                    return true;
+                }
+                if (!unifyModeImplemented(modes[i])) {
+                    setStatus("「" + unifyModeLabel(modes[i]) + "」暂未实现");
+                    return true;
+                }
+                applyUnifyMode(modes[i]);
                 return true;
             }
         }
@@ -3328,10 +3560,7 @@ public class CleanerScreen extends Screen {
         }
         if (ClientSettings.admin && !headerEditShown
                 && mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 126 && mouseY < y + 142) {
-            editServer = !editServer;
-            ClientSettings.editServer = editServer;
-            ClientSettings.touch();
-            setStatus(editServer ? "规则改动会写到服务端" : "规则改动只写本地");
+            switchEditTarget();
             return true;
         }
         if (mouseX >= x + 8 && mouseX <= x + 72 && mouseY >= y + h - 26 && mouseY < y + h - 8) {
@@ -3824,7 +4053,16 @@ public class CleanerScreen extends Screen {
             dupPanel.scroll(delta);
             return true;
         }
-        if (adaptersOpen) return true;
+        if (adaptersOpen) {
+            for (int c = 0; c < 3; c++) {
+                int[] r = adapterColumnRect(c);
+                if (mouseX >= r[0] && mouseX <= r[0] + r[2] && mouseY >= r[1] && mouseY <= r[1] + r[3]) {
+                    adapterScroll[c] = Math.max(0, adapterScroll[c] - (int) Math.signum(delta));
+                    return true;
+                }
+            }
+            return true;
+        }
         if (previewOpen) {
             int visible = Math.max(1, (previewH() - 96) / 12);
             int maxScroll = Math.max(0, previewRows() - visible);

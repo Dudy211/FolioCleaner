@@ -2,6 +2,7 @@ package com.yuneko.foliocleaner;
 
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.server.packs.resources.SimplePreparableReloadListener;
 import net.minecraft.commands.CommandSourceStack;
@@ -45,6 +46,10 @@ public final class ServerEvents {
                         .then(Commands.literal("gen").executes(ctx -> unify(ctx, ServerUnify.GEN)))
                         .then(Commands.literal("rollback").executes(ctx -> unify(ctx, ServerUnify.ROLLBACK)))
                         .then(Commands.literal("wipe").executes(ctx -> unify(ctx, ServerUnify.WIPE))))
+                .then(Commands.literal("adapters")
+                        .executes(ctx -> adapters(ctx.getSource(), false))
+                        .then(Commands.literal("list").executes(ctx -> adapters(ctx.getSource(), false)))
+                        .then(Commands.literal("reload").executes(ctx -> adapters(ctx.getSource(), true))))
                 .then(Commands.literal("adaptercheck")
                         .executes(ctx -> adapterCheck(ctx.getSource(), null, null))
                         .then(Commands.argument("fp", com.mojang.brigadier.arguments.StringArgumentType.word())
@@ -53,8 +58,101 @@ public final class ServerEvents {
                                 .then(Commands.argument("ids", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
                                         .executes(ctx -> adapterCheck(ctx.getSource(),
                                                 com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "fp"),
-                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "ids")))))));
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "ids"))))))
+                .then(Commands.literal("groups")
+                        .executes(ctx -> groups(ctx.getSource(), false))
+                        .then(Commands.literal("all").executes(ctx -> groups(ctx.getSource(), true))))
+                .then(Commands.literal("mode")
+                        .executes(ctx -> mode(ctx.getSource(), null))
+                        .then(Commands.argument("m", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                .executes(ctx -> mode(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "m"))))));
 
+    }
+
+    /**
+     * 查看 / 修改「统一实现方式」（服务端权威的值）。
+     *
+     * <pre>
+     * /folioserver mode                  看当前值
+     * /folioserver mode rewrite|match|datapack
+     * </pre>
+     *
+     * <p>专服没有界面，这条就是唯一的改法（等价于管理员在「改:服务端」模式里点那三个按钮）。
+     */
+    private static int mode(CommandSourceStack source, String m) {
+        if (m == null) {
+            source.sendSuccess(() -> Component.literal("[Folio Cleaner] 统一实现方式："
+                    + ServerSettings.unifyMode + "（客户端这一项是灰的，由服务端决定）"), false);
+            return 1;
+        }
+        if (!ServerSettings.validMode(m)) {
+            source.sendSuccess(() -> Component.literal(
+                    "[Folio Cleaner] §c不认识：" + m + "（可选 datapack / rewrite / match）"), false);
+            return 0;
+        }
+        ServerSettings.unifyMode = m;
+        ServerSettings.save();
+        if (server != null) {
+            UnifyRuntime.applyOnServer(server, m);
+            CleanerNetwork.broadcast(server);
+        }
+        boolean datapack = "datapack".equals(m);
+        source.sendSuccess(() -> Component.literal("[Folio Cleaner] 统一实现方式已改为 " + m
+                + "，已重新应用并广播"
+                + (datapack ? "（数据包模式还要 /folioserver unify gen 生成，或等下次改规则自动生成）" : "")), false);
+        return 1;
+    }
+
+    /**
+     * 服务端看到的重复组（登录时就是这份会随规则一起下发给客户端）。
+     *
+     * <pre>
+     * /folioserver groups       组数 + 指纹 + 前 8 组
+     * /folioserver groups all   全部列出（上限 80 行）
+     * </pre>
+     *
+     * <p>用途：客户端「统一」结果和服务端不一致时，第一件事就是对比这两边的组清单/指纹。
+     * 另外 {@code rewrite} / {@code match} 模式下客户端**改用服务端这份**，所以这也是
+     * 「玩家那边实际会拿到的数据」。
+     */
+    private static int groups(CommandSourceStack source, boolean all) {
+        if (server == null) {
+            source.sendSuccess(() -> Component.literal("[Folio Cleaner] 服务端还没起来"), false);
+            return 0;
+        }
+        try {
+            String text = GroupSync.fromLevel(server.overworld(), DupOverrides.load());
+            java.util.Map<String, java.util.List<net.minecraft.world.item.Item>> map = GroupSync.groups(text);
+            source.sendSuccess(() -> Component.literal("[Folio Cleaner] 重复组 " + map.size()
+                    + " 个 · 指纹 " + GroupSync.fingerprint(text)
+                    + " · 编码 " + text.length() + " 字符"), false);
+            if (map.isEmpty()) {
+                source.sendSuccess(() -> Component.literal(
+                        "[Folio Cleaner] 没有重复组（纯净服 / 装的东西不重复时是正常的）"), false);
+                return 1;
+            }
+            int limit = all ? 80 : 8;
+            int n = 0;
+            for (var e : map.entrySet()) {
+                if (n++ >= limit) {
+                    source.sendSuccess(() -> Component.literal("[Folio Cleaner] §8……还有 "
+                            + (map.size() - limit) + " 组，用 /folioserver groups all 看全部"), false);
+                    break;
+                }
+                StringBuilder sb = new StringBuilder();
+                sb.append("  §e").append(e.getKey()).append(" §8(").append(e.getValue().size()).append(") ");
+                for (var item : e.getValue()) {
+                    sb.append("§7").append(BuiltInRegistries.ITEM.getKey(item)).append(' ');
+                }
+                source.sendSuccess(() -> Component.literal(sb.toString()), false);
+            }
+            return 1;
+        } catch (Throwable t) {
+            source.sendSuccess(() -> Component.literal("[Folio Cleaner] §c读取重复组失败："
+                    + t.getClass().getSimpleName()), false);
+            return 0;
+        }
     }
 
     /**
@@ -76,6 +174,39 @@ public final class ServerEvents {
     }
 
     /**
+     * 服务端适配器管理（专服没有界面，只能靠指令）。
+     *
+     * <pre>
+     * /folioserver adapters          列出当前适配器（类型 / id / 名字 / 来源 / 开关）
+     * /folioserver adapters reload   重新扫描 config/foliocleaner/adapters/（json+lua 热加载；新 jar 也会被认出来）
+     * </pre>
+     */
+    private static int adapters(CommandSourceStack source, boolean reload) {
+        // 列之前总是重扫一次：避免"文件已经放好了但列表还是旧的"
+        reload = true;
+        if (reload) {
+            int n = com.yuneko.foliocleaner.compat.AdapterDir.reload();
+            source.sendSuccess(() -> Component.literal("[Folio Cleaner] 已重新扫描适配器：" + n + " 个"), false);
+        }
+        var list = com.yuneko.foliocleaner.compat.AdapterDir.all();
+        if (list.isEmpty()) {
+            source.sendSuccess(() -> Component.literal(
+                    "[Folio Cleaner] 还没有适配器 —— 把 json / lua / jar 丢进 config/foliocleaner/adapters/"), false);
+            return 1;
+        }
+        source.sendSuccess(() -> Component.literal("[Folio Cleaner] 适配器 " + list.size() + " 个："), false);
+        for (var e : list) {
+            source.sendSuccess(() -> Component.literal("  " + (e.enabled() ? "§a● " : "§8○ ")
+                    + "[" + e.kind() + "] " + e.name() + " §8(" + e.id() + " · " + e.file() + ")"), false);
+        }
+        source.sendSuccess(() -> Component.literal("[Folio Cleaner] 指纹 "
+                + com.yuneko.foliocleaner.compat.AdapterDir.fingerprint()), false);
+        source.sendSuccess(() -> Component.literal("[Folio Cleaner] id=哈希 "
+                + com.yuneko.foliocleaner.compat.AdapterDir.hashList()), false);
+        return 1;
+    }
+
+    /**
      * 不用真客户端也能验证「指纹/差异清单」这条逻辑。
      *
      * <pre>
@@ -92,7 +223,7 @@ public final class ServerEvents {
                 + com.yuneko.foliocleaner.compat.AdapterDir.idList()), false);
         if (fp == null) {
             source.sendSuccess(() -> Component.literal(
-                    "[Folio Cleaner] 想模拟客户端：/folioserver adaptercheck <fp> [id,id,...]"), false);
+                    "[Folio Cleaner] 想模拟客户端：/folioserver adaptercheck <fp> [id[=hash8],id...]"), false);
             return 1;
         }
         String diff = CleanerNetwork.diffAdapters(fp, ids);
@@ -133,8 +264,9 @@ public final class ServerEvents {
         ServerSettings.load();
         RecipeRemover.apply(server);
         // 统一（改配方 / 运行时）：服务端也要应用，否则专用服上这两个模式等于没开
-        UnifyRuntime.applyOnServer(server, ClientSettings.unifyMode);
-        FolioCleaner.LOGGER.info("[Folio Cleaner] 服务端已就绪，规则 {} 条", Rules.size());
+        UnifyRuntime.applyOnServer(server, ServerSettings.unifyMode);
+        FolioCleaner.LOGGER.info("[Folio Cleaner] 服务端已就绪，规则 {} 条，统一方式 {}",
+                Rules.size(), ServerSettings.unifyMode);
         warnLegacyPack(server);
     }
 
@@ -156,9 +288,16 @@ public final class ServerEvents {
             @Override
             protected void apply(Void unused, ResourceManager resourceManager, ProfilerFiller profiler) {
                 Rules.loadServerRules();
+                // /reload 也重读服务端设置（改了 adapterCheck 不用重启）
+                ServerSettings.load();
+                // ★/reload 也要重新扫适配器（否则新丢进去的 json/lua/jar 认不出来）
+                try {
+                    com.yuneko.foliocleaner.compat.AdapterDir.reload();
+                } catch (Throwable ignored) {
+                }
                 if (server != null) {
                     RecipeRemover.apply(server);
-                    UnifyRuntime.applyOnServer(server, ClientSettings.unifyMode);
+                    UnifyRuntime.applyOnServer(server, ServerSettings.unifyMode);
                 }
             }
         });

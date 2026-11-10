@@ -271,6 +271,10 @@ public final class Cleaner {
             UnifyRuntime.applyIfNeeded(mode);
             return;
         }
+        // ★不是运行时模式：必须先把运行时改动还原掉。
+        //   以前这里直接 return —— 从 rewrite 切到 datapack 后，被改宽的原料数组还留着，
+        //   等于「两套统一同时生效」，而且要重开游戏才恢复。
+        UnifyRuntime.deactivate();
         if (!"datapack".equals(mode)) return;
         Minecraft mc = Minecraft.getInstance();
         var server = mc.getSingleplayerServer();

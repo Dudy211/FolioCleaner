@@ -28,7 +28,8 @@ import java.util.List;
  * {@code replace:false} 是**合并**语义，不会覆盖原文件。整合包里大量配方本来就写
  * {@code #c:ingots/steel}，所以这一步就能让它们互相通用，一条配方都不用改。
  *
- * <p>配方里「写死了某个具体物品」的情况，要等 {@code rewriteRecipes()}（TODO）。
+ * <p>配方里「写死了某个具体物品」的情况，由 {@link #rewriteRecipes} 处理
+ * （把 {@code item} 改写成引用 tag）。
  *
  * <p>本类只负责**写文件**，不碰服务器 / 不触发 reload —— 那些由上层决定，
  * 这样它也方便单测（给个临时目录就能跑）。

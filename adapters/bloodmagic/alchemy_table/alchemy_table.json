@@ -1,0 +1,32 @@
+// ============================================================
+// 血魔法 Alchemy Table（炼金桌） —— json 声明式适配器（双保险）
+// 菜单类（FQCN）: wayoftime.bloodmagic.common.container.tile.ContainerAlchemyTable
+// 置信度: 高（1.20.1 源码 addSlot 顺序核实：六边形 6 个材料 → 生命水晶 → 产出）
+// 槽位: 0-5 = 六边形材料位，6 = 生命水晶（SlotOrb），7 = 产出（SlotOutput）
+// 依据: BloodMagic@1.20.1 ContainerAlchemyTable.java:41-48
+// 注：配方本身已注册在 RecipeManager（普通「删除 / 隐藏」规则就能覆盖），
+//     本适配器是**双保险**：万一别的模组手工放了结果槽、或规则只删了配方表里的条目，
+//     这里还能在输入命中「删除」规则时把结果槽清掉。
+{
+  "id": "bloodmagic_alchemy_table",
+  "name": "血魔法·炼金桌",
+  "comment": "六边材料(0-5)或生命水晶(6)命中「删除」规则时清空产出槽(7)",
+  "scope": {
+    "menu": "wayoftime.bloodmagic.common.container.tile.ContainerAlchemyTable"
+  },
+  "probe": {
+    "result": [
+      7
+    ],
+    "inputs": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ]
+  },
+  "action": "clearResult"
+}

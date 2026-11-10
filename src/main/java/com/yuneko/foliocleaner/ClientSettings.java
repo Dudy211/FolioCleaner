@@ -66,6 +66,12 @@ public final class ClientSettings {
     /** 上次的标签页 ITEM / MOD / RECIPE */
     public static String lastTab = "ITEM";
 
+    /** 调试面板上次的位置（-1 = 还没保存过） */
+    public static int debugPanelX = -1;
+    public static int debugPanelY = -1;
+    /** 调试面板上次是开还是关（进游戏自动恢复；改完不用每次重按 F7） */
+    public static boolean debugPanelOpen = false;
+
     /** 调试面板：在任何容器界面上叠加槽位编号 */
     public static boolean debugOverlay = false;
     /** 适配器演练模式：命中只打日志，不清结果槽（作者验证用） */
@@ -123,6 +129,9 @@ public final class ClientSettings {
             if (obj.has("editServer")) editServer = obj.get("editServer").getAsBoolean();
             if (obj.has("debugOverlay")) debugOverlay = obj.get("debugOverlay").getAsBoolean();
             if (obj.has("adapterDryRun")) adapterDryRun = obj.get("adapterDryRun").getAsBoolean();
+            if (obj.has("debugPanelX")) debugPanelX = obj.get("debugPanelX").getAsInt();
+            if (obj.has("debugPanelY")) debugPanelY = obj.get("debugPanelY").getAsInt();
+            if (obj.has("debugPanelOpen")) debugPanelOpen = obj.get("debugPanelOpen").getAsBoolean();
             disabledGuards.clear();
             if (obj.has("disabledGuards") && obj.get("disabledGuards").isJsonArray()) {
                 for (var el : obj.getAsJsonArray("disabledGuards")) {
@@ -161,6 +170,9 @@ public final class ClientSettings {
             obj.addProperty("editServer", editServer);
             obj.addProperty("debugOverlay", debugOverlay);
             obj.addProperty("adapterDryRun", adapterDryRun);
+            obj.addProperty("debugPanelX", debugPanelX);
+            obj.addProperty("debugPanelY", debugPanelY);
+            obj.addProperty("debugPanelOpen", debugPanelOpen);
             var disabledArr = new com.google.gson.JsonArray();
             for (String id : disabledGuards) disabledArr.add(id);
             obj.add("disabledGuards", disabledArr);

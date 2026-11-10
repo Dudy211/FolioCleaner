@@ -118,6 +118,8 @@ public final class DuplicateGroups {
     /** 配方引用次数缓存（canonical 自动推用）：按世界缓存 */
     private static Map<Item, Integer> usageCache;
     private static Object usageCacheLevel;
+    /** 每次 invalidate 自增：给「按不变内容缓存」的调用方当键（见 GroupSync） */
+    private static int revision;
 
     private DuplicateGroups() {
     }
@@ -188,8 +190,14 @@ public final class DuplicateGroups {
             rawCacheLevel = null;
             usageCache = null;
             usageCacheLevel = null;
+            revision++;
         } catch (Throwable ignored) {
         }
+    }
+
+    /** 扫描结果的「代」号：invalidate 时自增，用来判断缓存是否还有效 */
+    public static int revision() {
+        return revision;
     }
 
     // ---------------------------------------------------------------- 内部

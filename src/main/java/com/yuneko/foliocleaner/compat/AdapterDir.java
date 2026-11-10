@@ -177,6 +177,24 @@ public final class AdapterDir {
         return sb.toString();
     }
 
+    /**
+     * 「id=内容哈希前 8 位」逗号分隔 —— 校验时能指名道姓说**哪个**适配器内容不一样。
+     *
+     * <p>{@link #fingerprint()} 只能回答「有一套不一样」，玩家还得自己一个个试；
+     * 带上每个 id 的哈希之后，服务端就能直接回「lua:altar 内容不同」。
+     * 单值指纹仍然保留（最快的放行路径），这份只在指纹对不上时才用。
+     */
+    public static String hashList() {
+        StringBuilder sb = new StringBuilder();
+        for (Entry e : all()) {
+            if (sb.length() > 0) sb.append(',');
+            String h = contentHash(e);
+            sb.append(e.kind()).append(':').append(e.id()).append('=')
+                    .append(h.length() > 8 ? h.substring(0, 8) : h);
+        }
+        return sb.toString();
+    }
+
     private static String contentHash(Entry e) {
         try {
             if (!KIND_JAR.equals(e.kind())) {

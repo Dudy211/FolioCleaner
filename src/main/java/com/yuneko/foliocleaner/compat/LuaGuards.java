@@ -224,6 +224,22 @@ public final class LuaGuards {
                 return LuaValue.valueOf(menu.getClass().getSimpleName());
             }
         });
+        // 「删除」规则涉及的物品 id（和 json 适配器的 removeTargets 同源）
+        t.set("removeTargets", new ZeroArgFunction() {
+            @Override
+            public LuaValue call() {
+                LuaTable arr = new LuaTable();
+                int n = 0;
+                for (com.yuneko.foliocleaner.Rule rule : com.yuneko.foliocleaner.Rules.serverRules()) {
+                    if (rule == null || !rule.enabled) continue;
+                    if (!com.yuneko.foliocleaner.Rule.ACTION_REMOVE.equals(rule.action)) continue;
+                    if (!com.yuneko.foliocleaner.Rule.TYPE_ITEM.equals(rule.type)) continue;
+                    if (rule.target == null) continue;
+                    arr.set(++n, LuaValue.valueOf(rule.target));
+                }
+                return arr;
+            }
+        });
         t.set("dryrun", new ZeroArgFunction() {
             @Override
             public LuaValue call() {

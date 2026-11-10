@@ -1,0 +1,34 @@
+// ============================================================
+// 匠魂 Crafting Station（匠魂工作台） —— json 声明式适配器（双保险）
+// 菜单类（FQCN）: slimeknights.tconstruct.tables.menu.CraftingStationContainerMenu
+// 置信度: 高（1.20.1 源码 addSlot 顺序核实：3x3 网格先加，结果槽最后加）
+// 槽位: 0-8 = 3x3 合成网格，9 = 结果（PlayerSensitiveLazyResultSlot）
+// 依据: TinkersConstruct@1.20.1 CraftingStationContainerMenu.java:35 / :39
+// 注：配方本身已注册在 RecipeManager（普通「删除 / 隐藏」规则就能覆盖），
+//     本适配器是**双保险**：万一别的模组手工放了结果槽、或规则只删了配方表里的条目，
+//     这里还能在输入命中「删除」规则时把结果槽清掉。
+{
+  "id": "tinkers_crafting_station",
+  "name": "匠魂·工匠工作台",
+  "comment": "3x3 网格(0-8)里有被「删除」规则命中的物品时清空结果槽(9)",
+  "scope": {
+    "menu": "slimeknights.tconstruct.tables.menu.CraftingStationContainerMenu"
+  },
+  "probe": {
+    "result": [
+      9
+    ],
+    "inputs": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ]
+  },
+  "action": "clearResult"
+}

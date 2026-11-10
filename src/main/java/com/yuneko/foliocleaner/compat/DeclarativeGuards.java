@@ -77,6 +77,8 @@ public final class DeclarativeGuards {
 
     private static List<Spec> specs = List.of();
     private static Path loadedFrom;
+    /** 重入闸门：命中后会调 menu.broadcastChanges()，那会再次回到 {@link #check} */
+    private static volatile boolean checking;
     /** 已经打过日志的 (菜单类#槽位#适配器) ，避免每 tick 刷屏 */
     private static final Set<String> LOGGED = new HashSet<>();
 
@@ -110,9 +112,25 @@ public final class DeclarativeGuards {
 
     /**
      * 每 tick 由 {@code ContainerMenuMixin} 调。只看「声明过」的菜单，没声明直接返回。
+     *
+     * <p>★重入保护：命中后我们为了立刻同步客户端会调 {@code menu.broadcastChanges()}，
+     * 那会**再次回到本方法**（同一个注入点）。没有这道闸门时：
+     * <ul>
+     *   <li>json 适配器：嵌套一层，白跑一遍</li>
+     *   <li>lua 适配器：脚本如果无脑 {@code return true}，就会**无限递归 → StackOverflowError 崩服**</li>
+     * </ul>
      */
     public static void check(AbstractContainerMenu menu) {
-        if (menu == null) return;
+        if (menu == null || checking) return;
+        checking = true;
+        try {
+            check0(menu);
+        } finally {
+            checking = false;
+        }
+    }
+
+    private static void check0(AbstractContainerMenu menu) {
         // Lua 适配器和 json 共用一个注入点
         try {
             LuaGuards.check(menu);
@@ -155,6 +173,7 @@ public final class DeclarativeGuards {
 
         // 3) 命中：记日志；非演练模式才真的清
         String key = className + "#" + spec.id;
+        if (LOGGED.size() > 512) LOGGED.clear();    // 兜底：别让这个集合无限长
         if (LOGGED.add(key)) {
             FolioCleaner.LOGGER.info("[Folio Cleaner] 声明式适配器「{}」命中：{}（结果槽 {}，输入槽 {}）",
                     spec.name, className, java.util.Arrays.toString(spec.result),

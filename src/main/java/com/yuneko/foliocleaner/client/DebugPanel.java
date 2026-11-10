@@ -33,6 +33,7 @@ public final class DebugPanel {
     private static final int TITLE_H = 13;
 
     private static boolean open;
+    private static boolean restored;
     private static int x = 8;
     private static int y = 8;
     private static boolean dragging;
@@ -55,6 +56,11 @@ public final class DebugPanel {
     public static void toggle() {
         open = !open;
         if (open) {
+            // 恢复上次的位置
+            if (ClientSettings.debugPanelX >= 0 && ClientSettings.debugPanelY >= 0) {
+                x = ClientSettings.debugPanelX;
+                y = ClientSettings.debugPanelY;
+            }
             Screen s = Minecraft.getInstance().screen;
             if (s != null && s.width > 0) {
                 x = Math.max(2, Math.min(s.width - W - 2, x));
@@ -62,11 +68,25 @@ public final class DebugPanel {
             }
         }
         ClientSettings.debugOverlay = open;    // 和旧开关同步，槽位编号跟着走
+        // 开/关也持久化：调适配器往往跨好几个会话，不该每次重开游戏都重按 F7
+        ClientSettings.debugPanelOpen = open;
+        ClientSettings.touch();
+    }
+
+    /** 进游戏时按上次的「开/关」状态恢复一次（只做一次，之后完全由 F7 控制） */
+    private static void restoreOnce() {
+        if (restored) return;
+        restored = true;
+        if (!open && ClientSettings.debugPanelOpen) {
+            open = true;
+            ClientSettings.debugOverlay = true;
+        }
     }
 
     // ---------------------------------------------------------------- 渲染
 
     public static void render(GuiGraphics gg, Screen screen) {
+        restoreOnce();
         if (!open) return;
         Font font = Minecraft.getInstance().font;
         if (screen instanceof AbstractContainerScreen<?> cs) {
@@ -173,6 +193,12 @@ public final class DebugPanel {
     public static boolean mouseReleased() {
         boolean was = dragging;
         dragging = false;
+        if (was) {
+            // 拖完才存，避免拖动过程里每帧写文件
+            ClientSettings.debugPanelX = x;
+            ClientSettings.debugPanelY = y;
+            ClientSettings.touch();
+        }
         return was;
     }
 
