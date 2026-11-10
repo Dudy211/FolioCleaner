@@ -151,6 +151,18 @@ public final class CleanerNetwork {
      */
     public static java.util.function.Consumer<String> unifyResultSink;
 
+    /**
+     * 比对客户端指纹（供网络包和 {@code /folioserver adaptercheck} 共用）。
+     *
+     * @return null = 一致；否则是人话差异
+     */
+    public static String diffAdapters(String clientFp, String clientIds) {
+        String serverFp = com.yuneko.foliocleaner.compat.AdapterDir.fingerprint();
+        if (serverFp.equals(clientFp)) return null;
+        return AdapterAckPacket.diff(com.yuneko.foliocleaner.compat.AdapterDir.idList(),
+                clientIds == null ? "" : clientIds);
+    }
+
     /** 登录后让客户端报一次适配器指纹 */
     public static void requestAdapterCheck(ServerPlayer player) {
         try {
@@ -247,7 +259,7 @@ public final class CleanerNetwork {
         }
 
         /** 对比两边 id 清单，返回人话差异 */
-        private static String diff(String serverIds, String clientIds) {
+        static String diff(String serverIds, String clientIds) {
             var s = new java.util.LinkedHashSet<>(java.util.Arrays.asList(serverIds.split(",")));
             var cl = new java.util.LinkedHashSet<>(java.util.Arrays.asList(clientIds.split(",")));
             var missing = new java.util.ArrayList<String>();

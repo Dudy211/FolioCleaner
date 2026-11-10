@@ -44,7 +44,16 @@ public final class ServerEvents {
                         .then(Commands.literal("status").executes(ctx -> unify(ctx, ServerUnify.STATUS)))
                         .then(Commands.literal("gen").executes(ctx -> unify(ctx, ServerUnify.GEN)))
                         .then(Commands.literal("rollback").executes(ctx -> unify(ctx, ServerUnify.ROLLBACK)))
-                        .then(Commands.literal("wipe").executes(ctx -> unify(ctx, ServerUnify.WIPE)))));
+                        .then(Commands.literal("wipe").executes(ctx -> unify(ctx, ServerUnify.WIPE))))
+                .then(Commands.literal("adaptercheck")
+                        .executes(ctx -> adapterCheck(ctx.getSource(), null, null))
+                        .then(Commands.argument("fp", com.mojang.brigadier.arguments.StringArgumentType.word())
+                                .executes(ctx -> adapterCheck(ctx.getSource(),
+                                        com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "fp"), ""))
+                                .then(Commands.argument("ids", com.mojang.brigadier.arguments.StringArgumentType.greedyString())
+                                        .executes(ctx -> adapterCheck(ctx.getSource(),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "fp"),
+                                                com.mojang.brigadier.arguments.StringArgumentType.getString(ctx, "ids")))))));
 
     }
 
@@ -64,6 +73,41 @@ public final class ServerEvents {
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    /**
+     * 不用真客户端也能验证「指纹/差异清单」这条逻辑。
+     *
+     * <pre>
+     * /folioserver adaptercheck                       打印本服指纹 + 适配器清单
+     * /folioserver adaptercheck &lt;fp&gt; [clientIds]      模拟一个客户端来比对
+     * </pre>
+     */
+    private static int adapterCheck(CommandSourceStack source, String fp, String ids) {
+        String serverFp = com.yuneko.foliocleaner.compat.AdapterDir.fingerprint();
+        int count = com.yuneko.foliocleaner.compat.AdapterDir.all().size();
+        source.sendSuccess(() -> Component.literal("[Folio Cleaner] 本服指纹 " + serverFp
+                + " · 适配器 " + count + " 个（检查模式 " + ServerSettings.adapterCheck + "）"), false);
+        source.sendSuccess(() -> Component.literal("[Folio Cleaner] id 清单："
+                + com.yuneko.foliocleaner.compat.AdapterDir.idList()), false);
+        if (fp == null) {
+            source.sendSuccess(() -> Component.literal(
+                    "[Folio Cleaner] 想模拟客户端：/folioserver adaptercheck <fp> [id,id,...]"), false);
+            return 1;
+        }
+        String diff = CleanerNetwork.diffAdapters(fp, ids);
+        if (diff == null) {
+            source.sendSuccess(() -> Component.literal("[Folio Cleaner] §a指纹一致 —— 真实客户端会被放行"), false);
+        } else {
+            source.sendSuccess(() -> Component.literal(
+                    "[Folio Cleaner] §c指纹不一致 —— 真实客户端会被断开（adapterCheck="
+                            + ServerSettings.adapterCheck + "）："), false);
+            for (String line : diff.split("\n")) {
+                if (line.isBlank()) continue;
+                source.sendSuccess(() -> Component.literal("  " + line), false);
+            }
+        }
+        return 1;
     }
 
     private static int unify(com.mojang.brigadier.context.CommandContext<CommandSourceStack> ctx, String op) {
