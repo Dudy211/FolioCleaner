@@ -24,7 +24,11 @@ import java.util.function.Supplier;
  */
 public final class CleanerNetwork {
 
-    private static final String PROTOCOL = "6";
+    private static final String PROTOCOL = "7";
+
+    /** 规则 JSON 的包上限（字符）。以前写死 32767 —— 规则一多（≈200 条）就会超，
+     *  编码抛异常 = 玩家登录直接失败。放到 1MB，和重复组一个量级。 */
+    private static final int RULES_MAX = 1048576;
 
     public static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
             .named(new ResourceLocation(FolioCleaner.MODID, "rules"))
@@ -151,14 +155,14 @@ public final class CleanerNetwork {
         private static final int GROUPS_MAX = 4194304;
 
         public static void encode(SyncRulesPacket msg, FriendlyByteBuf buf) {
-            buf.writeUtf(msg.json, 32767);
+            buf.writeUtf(msg.json, RULES_MAX);
             buf.writeBoolean(msg.admin);
             buf.writeUtf(msg.groups == null ? "" : msg.groups, GROUPS_MAX);
             buf.writeUtf(msg.unifyMode == null ? "" : msg.unifyMode, 32);
         }
 
         public static SyncRulesPacket decode(FriendlyByteBuf buf) {
-            String json = buf.readUtf(32767);
+            String json = buf.readUtf(RULES_MAX);
             boolean admin = buf.readBoolean();
             String groups = buf.readUtf(GROUPS_MAX);
             String unifyMode = buf.readUtf(32);
@@ -263,11 +267,11 @@ public final class CleanerNetwork {
     public record UpdateServerRulesPacket(String json) {
 
         public static void encode(UpdateServerRulesPacket msg, FriendlyByteBuf buf) {
-            buf.writeUtf(msg.json, 32767);
+            buf.writeUtf(msg.json, RULES_MAX);
         }
 
         public static UpdateServerRulesPacket decode(FriendlyByteBuf buf) {
-            return new UpdateServerRulesPacket(buf.readUtf(32767));
+            return new UpdateServerRulesPacket(buf.readUtf(RULES_MAX));
         }
 
         public static void handle(UpdateServerRulesPacket msg, Supplier<NetworkEvent.Context> ctx) {
@@ -501,13 +505,13 @@ public final class CleanerNetwork {
 
         public static void encode(UnifyRequestPacket msg, FriendlyByteBuf buf) {
             buf.writeUtf(msg.op == null ? "" : msg.op, 32);
-            buf.writeUtf(msg.overridesJson == null ? "" : msg.overridesJson, 32767);
+            buf.writeUtf(msg.overridesJson == null ? "" : msg.overridesJson, RULES_MAX);
             buf.writeBoolean(msg.crossTag);
             buf.writeBoolean(msg.autoReload);
         }
 
         public static UnifyRequestPacket decode(FriendlyByteBuf buf) {
-            return new UnifyRequestPacket(buf.readUtf(32), buf.readUtf(32767),
+            return new UnifyRequestPacket(buf.readUtf(32), buf.readUtf(RULES_MAX),
                     buf.readBoolean(), buf.readBoolean());
         }
 

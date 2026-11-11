@@ -130,6 +130,11 @@ public final class AdapterDir {
         } catch (Throwable ignored) {
         }
         HookMirror.invalidateCache();
+        // 目录刚重扫过：如果出现新的 hook 适配器，顺手镜像到 mods/（下次启动生效）
+        try {
+            if (HookMirror.hookCount() > 0) HookMirror.syncQuietly();
+        } catch (Throwable ignored) {
+        }
 
         out.sort((a, b) -> {
             int k = a.kind().compareTo(b.kind());
@@ -225,24 +230,26 @@ public final class AdapterDir {
         StringBuilder sb = new StringBuilder();
         for (Entry e : all()) {
             if (sb.length() > 0) sb.append(',');
-            String h = contentHash(e);
+            // ★先 sha1 再截断：以前直接截 contentHash，jar 条目会退化成 id 前 8 个字符
+            //   （"hook:arsnouveau" 和 "hook:arsx" 都是 "hook:ars" → 撞车，永远检测不出内容变化）
+            String sha = com.yuneko.foliocleaner.UnifyManifest.sha1(
+                    contentHash(e).getBytes(java.nio.charset.StandardCharsets.UTF_8));
             sb.append(e.kind()).append(':').append(e.id()).append('=')
-                    .append(h.length() > 8 ? h.substring(0, 8) : h);
+                    .append(sha.length() > 8 ? sha.substring(0, 8) : sha);
         }
         return sb.toString();
     }
 
     private static String contentHash(Entry e) {
         try {
-            if (!KIND_JAR.equals(e.kind())) {
-                Path f = folder().resolve(e.file());
-                if (Files.isRegularFile(f)) {
-                    return com.yuneko.foliocleaner.UnifyManifest.sha1(Files.readAllBytes(f));
-                }
+            // ★jar 也尽量按文件内容哈希：适配器目录里的 jar（含 hook jar）能找到实体文件，
+            //   这样"同名 jar 被替换"才检测得出来；mods/ 里注册的那种拿不到，退回 id
+            Path f = folder().resolve(e.file());
+            if (Files.isRegularFile(f)) {
+                return com.yuneko.foliocleaner.UnifyManifest.sha1(Files.readAllBytes(f));
             }
         } catch (Throwable ignored) {
         }
-        // jar：拿不到稳定的内容指纹，用 id（它带 jar 名/版本）
         return e.id();
     }
 

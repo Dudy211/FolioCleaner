@@ -33,8 +33,13 @@
 `_deploy/` 是**扁平化**的一份（非递归扫描只认根目录），整个目录的内容拷进
 `config/foliocleaner/adapters/` 即可；或直接用发布的 `foliocleaner-adapters-*.zip`。
 
-> 发布包**只含上表这 7 个 json**。`_test/`（演示）和 `_unverified/`（未验证/不支持的占位）
-> **都不分发** —— 尤其是多结构那几处，模板里的槽位是猜的，丢进去会清错槽位。
+> 发布包含 **8 个文件**：上表 7 个 json + **`arcane-anvil-adapter.jar`**（铁砧系工作台的代码适配器，
+> 走 ServiceLoader，同样放进 `config/foliocleaner/adapters/` 根目录即可，**不用**放 mods/）。
+> `_test/`（演示）和 `_unverified/`（未验证/不支持的占位）**都不分发** —— 尤其是多结构那几处，
+> 模板里的槽位是猜的，丢进去会清错槽位。
+>
+> ⚠️ 只有**带 mixin** 的 hook 适配器才需要放 `mods/`；判据是 jar 里有没有 `*.mixins.json`。
+> 本包里的 `arcane-anvil-adapter.jar` 没有 mixin，属于普通代码适配器。
 
 
 ## 调研过、但不需要适配器（走 RecipeManager，删配方即可）
@@ -77,7 +82,7 @@ cp adapters/twilightforest/uncrafting_table/*.json <整合包>/config/folioclean
 # cp adapters/<modid>/<feature>/*.{json,lua} <整合包>/config/foliocleaner/adapters/
 ```
 
-- json / lua：服务端执行 `/folioserver adapters reload` 热加载（或客户端界面点「同步加载」）
+- json / lua / **无 mixin 的 jar**：服务端执行 `/folioserver adapters reload` 热加载（或客户端界面点「同步加载」）
 - jar（SimpleCraftGuard）：需重启游戏（类加载器无法卸载）
 - **`_unverified/` 不分发**：里面是未验证/当前框架覆盖不到的占位（多结构祭坛、Create 机械合成器、
   通用机械模板）。它们的 `MENU_HINT` / `result` 都是猜的，**丢进 config 可能清掉输入槽销毁物品**。
