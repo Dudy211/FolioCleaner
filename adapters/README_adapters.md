@@ -31,7 +31,10 @@
 ## 部署
 
 `_deploy/` 是**扁平化**的一份（非递归扫描只认根目录），整个目录的内容拷进
-`config/foliocleaner/adapters/` 即可；或直接用 `foliocleaner-adapters-1110.zip`。
+`config/foliocleaner/adapters/` 即可；或直接用发布的 `foliocleaner-adapters-*.zip`。
+
+> 发布包**只含上表这 7 个 json**。`_test/`（演示）和 `_unverified/`（未验证/不支持的占位）
+> **都不分发** —— 尤其是多结构那几处，模板里的槽位是猜的，丢进去会清错槽位。
 
 
 ## 调研过、但不需要适配器（走 RecipeManager，删配方即可）
@@ -62,7 +65,7 @@
 |---|---|---|---|
 | 植物魔法 | 大地聚合板 Terrestrial Agglomeration Plate | 结构型合成（板+环绕花瓣触发）；1.20.x 源码树中无任何 Menu/Container/Screen 类，只有 `TerrestrialAgglomerationPlateBlockEntity` | 无 ContainerMenu，做不了守卫适配器；但配方是已注册类型（有 datagen provider `TerrestrialAgglomerationProvider`），删配方仍可用 |
 | 植物魔法 | 花瓣药铺 Petal Apothecary | 1.20.x 源码树中无 Menu/Container/Screen 类（只有 `PetalApothecaryBlockEntity`）；取配方走 `level.getRecipeManager().getRecipeFor(BotaniaRecipeTypes.PETAL_TYPE)`（`botania:petal_apothecary` 已注册） | 无 ContainerMenu，做不了守卫适配器；删配方可覆盖配方表 |
-| 造物 Create | 机械合成器 Mechanical Crafter | `content/kinetics/crafter` 包无任何 Menu/Container 类（只有 `MechanicalCrafterBlockEntity` 等）；配方 `MechanicalCraftingRecipe extends ShapedRecipe`，经 `AllRecipeTypes` 注册 | 无 ContainerMenu，做不了守卫适配器；删配方可覆盖。占位模板见 `_unverified/create/mechanical_crafter.lua`（未验证，F7 实测前勿启用） |
+| 造物 Create | 机械合成器 Mechanical Crafter | `content/kinetics/crafter` 包无任何 Menu/Container 类（只有 `MechanicalCrafterBlockEntity` 等）；配方 `MechanicalCraftingRecipe extends ShapedRecipe`，经 `AllRecipeTypes` 注册 | 无 ContainerMenu，做不了守卫适配器；删配方可覆盖。占位模板见 `_unverified/create_mechanical_crafter.lua`（**不随发布包分发**） |
 
 ## 部署方法
 
@@ -76,4 +79,8 @@ cp adapters/twilightforest/uncrafting_table/*.json <整合包>/config/folioclean
 
 - json / lua：服务端执行 `/folioserver adapters reload` 热加载（或客户端界面点「同步加载」）
 - jar（SimpleCraftGuard）：需重启游戏（类加载器无法卸载）
-- **未验证文件**：`_unverified/` 下的适配器（如 Create 模板）类名/槽位未实测，**默认惰性**（MENU_HINT 留空不拦任何界面）；启用前必须先按文件头注释用 F7 调试面板核对菜单类名与槽位，再平铺拷入并 reload
+- **`_unverified/` 不分发**：里面是未验证/当前框架覆盖不到的占位（多结构祭坛、Create 机械合成器、
+  通用机械模板）。它们的 `MENU_HINT` / `result` 都是猜的，**丢进 config 可能清掉输入槽销毁物品**。
+  真要启用必须先按文件头注释用 F7 核对菜单类名与槽位。
+- **多结构（无容器界面的祭坛/合成器）当前不支持**：`broadcastChanges` 注入点打不到，
+  需要 BlockEntity / 结构事件级别的新注入点，见 HANDOFF「已知未修」第 1 条。

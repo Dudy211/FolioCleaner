@@ -1,8 +1,0 @@
-{
-  "id": "test_crafting",
-  "name": "测试·工作台(json)",
-  "comment": "临时测试用：原版工作台里，只要输入含「删除」规则的目标物品，就清空结果槽",
-  "scope": { "menu": "CraftingMenu" },
-  "probe": { "result": [0], "inputs": [1, 2, 3, 4, 5, 6, 7, 8, 9] },
-  "action": "clearResult"
-}
