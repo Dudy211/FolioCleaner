@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.yuneko.foliocleaner.hooks.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "plugin": "com.yuneko.foliocleaner.hooks.FolioMixinPlugin",
+  "mixins": [
+    "ArsRitualMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

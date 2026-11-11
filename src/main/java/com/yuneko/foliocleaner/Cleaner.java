@@ -1,10 +1,12 @@
 package com.yuneko.foliocleaner;
 
+import mezz.jei.api.constants.VanillaTypes;
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
 import mezz.jei.api.gui.ingredient.IRecipeSlotView;
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;
 import mezz.jei.api.ingredients.IIngredientType;
 import mezz.jei.api.recipe.IFocus;
+import mezz.jei.api.recipe.IFocusFactory;
 import mezz.jei.api.recipe.IFocusGroup;
 import mezz.jei.api.recipe.IRecipeManager;
 import mezz.jei.api.recipe.RecipeIngredientRole;
@@ -615,34 +617,43 @@ public final class Cleaner {
                 }
             }
         }
-        if (explicitTypes.isEmpty()) {
-            if (unrestricted) {
-                FolioCleaner.LOGGER.debug(
-                        "[Folio Cleaner] 不限类型的物品规则不处理自定义 JEI 配方（性能考虑）；给规则加范围即可生效");
-            }
-            return;
-        }
-
-        List<IRecipeCategory<?>> all;
-        try {
-            all = manager.createRecipeCategoryLookup().get().toList();
-        } catch (Throwable t) {
+        if (explicitTypes.isEmpty() && !unrestricted) {
             return;
         }
 
         List<Object[]> work = new ArrayList<>();
-        for (IRecipeCategory<?> category : all) {
-            if (!explicitTypes.contains(category.getRecipeType().getUid().toString())) continue;
+        // 同一条配方可能同时被「显式类型」和「按物品反查」捞到 → 用 identity 集合去重
+        java.util.Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+        // ① 规则**明确指定了范围类型**的分类：整类扫（原行为，保持）
+        if (!explicitTypes.isEmpty()) {
+            List<IRecipeCategory<?>> all;
             try {
-                @SuppressWarnings("rawtypes")
-                List<?> recipes = manager.createRecipeLookup((RecipeType) category.getRecipeType())
-                        .includeHidden().get().toList();
-                for (Object recipe : recipes) {
-                    if (recipe instanceof Recipe<?>) continue; // 原版配方由 Selector 处理
-                    work.add(new Object[]{category, recipe});
-                }
-            } catch (Throwable ignored) {
+                all = manager.createRecipeCategoryLookup().get().toList();
+            } catch (Throwable t) {
+                all = List.of();
             }
+            for (IRecipeCategory<?> category : all) {
+                if (!explicitTypes.contains(category.getRecipeType().getUid().toString())) continue;
+                try {
+                    @SuppressWarnings("rawtypes")
+                    List<?> recipes = manager.createRecipeLookup((RecipeType) category.getRecipeType())
+                            .includeHidden().get().toList();
+                    for (Object recipe : recipes) {
+                        if (recipe instanceof Recipe<?>) continue; // 原版配方由 Selector 处理
+                        if (!seen.add(recipe)) continue;
+                        work.add(new Object[]{category, recipe});
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        // ② 不限类型的物品规则（最常见：直接按物品隐藏）→ 用 JEI 的 focus 索引**反查**。
+        //    这是「巫法祭坛的魔法仪式按物品藏不掉」的修法：那些配方不是 Recipe，
+        //    以前只在规则写了范围类型时才会被扫到。
+        if (unrestricted) {
+            collectByFocus(manager, rules, work, seen);
         }
         if (work.isEmpty()) return;
 
@@ -652,8 +663,93 @@ public final class Cleaner {
         FolioCleaner.LOGGER.debug("[Folio Cleaner] 开始分帧同步自定义配方，共 {} 条", work.size());
     }
 
-    /** 每个 tick 推进一点：优先保证「至少处理 1 条」，总预算约 6ms */
-    private static void tickCustomJob() {
+    /**
+     * 用 JEI 的 focus 索引**按物品反查**自定义配方（不走 RecipeManager 的那些）。
+     *
+     * <h2>为什么需要这个</h2>
+     * 「按物品隐藏」的规则以前只处理真 {@code Recipe} 对象；像新生魔艺的**魔法仪式**、
+     * 部分模组的 JEI 专属配方，它们不是 {@code Recipe}，于是「巫法祭坛的配方藏掉了、
+     * 仪式配方还在」。旧代码的补救办法是「只处理规则里写了范围类型的分类」——
+     * 但玩家按物品隐藏时根本不会去填工作台，所以等于永远不生效。
+     *
+     * <h2>为什么不会变慢</h2>
+     * JEI 15 没有「按物品列出配方」的直接 API，但 {@code IRecipeCategoriesLookup#limitFocus}
+     * 和 {@code IRecipeLookup#limitFocus} 就是干这个的：给一个物品焦点，只返回
+     * 「内含该物品」的分类 / 配方 —— 成本只和命中数相关，不做全量遍历。
+     *
+     * @param work 收集到的 (category, recipe) 对，交给分帧任务
+     * @param seen 去重（identity），避免和「显式类型」那一轮重复
+     */
+    private static void collectByFocus(IRecipeManager manager, List<Rule> rules,
+                                       List<Object[]> work, java.util.Set<Object> seen) {
+        IFocusFactory factory;
+        try {
+            factory = RUNTIME.getJeiHelpers().getFocusFactory();
+        } catch (Throwable t) {
+            FolioCleaner.LOGGER.debug("[Folio Cleaner] 拿不到 JEI 的 FocusFactory，跳过按物品反查");
+            return;
+        }
+
+        int added = 0;
+        for (Rule rule : rules) {
+            if (rule == null || !rule.enabled) continue;
+            if (!Rule.TYPE_ITEM.equals(rule.type)) continue;
+            if (!Rule.ACTION_HIDE.equals(rule.action)) continue;   // remove 由服务端删配方，这里只处理「隐藏」
+            if (!rule.hideIngredient && !rule.hideOutput && !rule.hideItem) continue;
+
+            Item item = null;
+            try {
+                var id = net.minecraft.resources.ResourceLocation.tryParse(rule.target);
+                if (id != null) item = BuiltInRegistries.ITEM.get(id);
+            } catch (Throwable ignored) {
+            }
+            if (item == null || item == Items.AIR) continue;
+
+            // JEI 15 的 createFocus 必须带角色 → 输入/输出分别查一次（两次都是索引查询，成本很小）
+            List<IFocus<?>> wanted = new ArrayList<>(2);
+            try {
+                ItemStack stack = new ItemStack(item);
+                if (rule.hideIngredient) {
+                    wanted.add(factory.createFocus(RecipeIngredientRole.INPUT, VanillaTypes.ITEM_STACK, stack));
+                }
+                if (rule.hideOutput) {
+                    wanted.add(factory.createFocus(RecipeIngredientRole.OUTPUT, VanillaTypes.ITEM_STACK, stack));
+                }
+            } catch (Throwable t) {
+                continue;
+            }
+            if (wanted.isEmpty()) continue;   // 只 hideItem 的规则：物品本身就被删了，无需扫配方
+
+            for (IFocus<?> focus : wanted) {
+                List<IFocus<?>> one = List.of(focus);
+                try {
+                    var categories = manager.createRecipeCategoryLookup()
+                            .limitFocus(one).includeHidden().get().toList();
+                    for (IRecipeCategory<?> category : categories) {
+                        RecipeType<?> type = category.getRecipeType();
+                        @SuppressWarnings("rawtypes")
+                        var recipes = manager.createRecipeLookup((RecipeType) type)
+                                .includeHidden().limitFocus(one).get().toList();
+                        for (Object recipe : recipes) {
+                            if (recipe instanceof Recipe<?>) continue;     // 原版配方由 Selector 处理
+                            if (!seen.add(recipe)) continue;
+                            work.add(new Object[]{category, recipe});
+                            added++;
+                        }
+                    }
+                } catch (Throwable t) {
+                    // 老版本 JEI 没有 limitFocus / 索引重建中 —— 静默跳过，不影响其它规则
+                    FolioCleaner.LOGGER.debug("[Folio Cleaner] 按物品反查自定义配方失败：{}", t.toString());
+                }
+            }
+        }
+        if (added > 0) {
+            // INFO：这条是「巫法祭坛仪式藏不掉」这类问题的验证入口 —— 有产出就该在日志里看到
+            FolioCleaner.LOGGER.info("[Folio Cleaner] 按物品反查出 {} 条自定义配方待判定（非 Recipe 对象）", added);
+        }
+    }
+
+    /** 每个 tick 推进一点：优先保证「至少处理 1 条」，总预算约 6ms */    private static void tickCustomJob() {
         if (!customRunning) return;
 
         if (!customHidePhase) {

@@ -2842,7 +2842,7 @@ public class CleanerScreen extends Screen {
 
     private int settingsH() {
         // 只有「标题栏放不下」时才在弹窗里多留一行给「改规则到」
-        return ClientSettings.admin && !headerEditShown ? 186 : 154;
+        return ClientSettings.admin && !headerEditShown ? 190 : 164;
     }
 
     private int optimizeW() {
@@ -2919,17 +2919,51 @@ public class CleanerScreen extends Screen {
         gg.drawString(this.font, ClientSettings.autoReload ? "●" : "○", x + w - 26, y + 99,
                 ClientSettings.autoReload ? COLOR_OK : COLOR_DOT_OFF, false);
 
+        // hook 适配器镜像（有 hook 适配器时**锁定开启**：关掉它们就永远不生效）
+        int hookCount = com.yuneko.foliocleaner.compat.HookMirror.hookCount();
+        boolean lockMirror = hookCount > 0;
+        boolean mirrorOn = ClientSettings.mirrorHookAdapters || lockMirror;
+        boolean hoverMirror = inRect((int) mouseX, (int) mouseY, x + 8, y + 118, w - 16, 16);
+        if (hoverMirror && !lockMirror) gg.fill(x + 8, y + 118, x + w - 8, y + 134, COLOR_HOVER);
+        gg.drawString(this.font, "hook 适配器镜像", x + 12, y + 121,
+                lockMirror ? COLOR_DIM : COLOR_TEXT, false);
+        if (lockMirror) {
+            // ★锁定状态用行内文字，不另占一行 —— 否则会和下面「改规则到哪个端」的指路文字重叠
+            String lock = "锁定";
+            gg.drawString(this.font, "§b" + lock, x + w - 8 - this.font.width(lock), y + 121, COLOR_INFO, false);
+        } else {
+            gg.drawString(this.font, mirrorOn ? "●" : "○", x + w - 26, y + 121,
+                    mirrorOn ? COLOR_OK : COLOR_DOT_OFF, false);
+        }
+
         // 管理员的「编辑目标」：**只在标题栏放不下时**才在这里出现（两处同时显示会让人以为有两个开关）
         if (ClientSettings.admin && !headerEditShown) {
-            boolean hoverEdit = inRect((int) mouseX, (int) mouseY, x + 8, y + 126, w - 16, 16);
-            if (hoverEdit) gg.fill(x + 8, y + 126, x + w - 8, y + 142, COLOR_HOVER);
-            gg.drawString(this.font, "改规则到", x + 12, y + 129, COLOR_TEXT, false);
+            boolean hoverEdit = inRect((int) mouseX, (int) mouseY, x + 8, y + 140, w - 16, 16);
+            if (hoverEdit) gg.fill(x + 8, y + 140, x + w - 8, y + 156, COLOR_HOVER);
+            gg.drawString(this.font, "改规则到", x + 12, y + 143, COLOR_TEXT, false);
             gg.drawString(this.font, editServer ? "§c服务端" : "§a客户端", x + w - 8 - this.font.width("服务端"),
-                    y + 129, editServer ? 0xFFFF9A9A : COLOR_OK, false);
-            gg.drawString(this.font, "§8点一下切换（服务端规则要服主权限）", x + 12, y + 146, COLOR_FAINT, false);
+                    y + 143, editServer ? 0xFFFF9A9A : COLOR_OK, false);
+            gg.drawString(this.font, "§8点一下切换（服务端规则要服主权限）", x + 12, y + 160, COLOR_FAINT, false);
         } else if (ClientSettings.admin) {
             // 标题栏已经有那个按钮了 → 这里只留一句指路，不再画第二个开关
-            gg.drawString(this.font, "§8改规则到哪个端：见标题栏「改:…」", x + 12, y + 118, COLOR_FAINT, false);
+            gg.drawString(this.font, "§8改规则到哪个端：见标题栏「改:…」", x + 12, y + 132, COLOR_FAINT, false);
+        }
+
+        if (hoverMirror) {
+            List<Component> lines = new ArrayList<>();
+            lines.add(Component.literal("§ehook 适配器镜像"));
+            lines.add(Component.literal("§7带 mixin 的适配器（名字前有 §f[hook]§7）没法在运行期加载 ——"));
+            lines.add(Component.literal("§7它们的字节码必须在游戏启动时由 FML 当 mod 读进去。"));
+            lines.add(Component.literal("§7所以这里会把 config/foliocleaner/adapters/ 里的这类 jar"));
+            lines.add(Component.literal("§7复制一份到 §fmods/foliocleaner-hook-<原名>§7，下次启动生效。"));
+            if (lockMirror) {
+                lines.add(Component.literal("§c已锁定：检测到 " + hookCount + " 个 hook 适配器"));
+                lines.add(Component.literal("§8关掉的话它们永远不会加载（这个开关就没意义了）"));
+            } else {
+                lines.add(Component.literal("§8现在没有 hook 适配器，可以自由开关"));
+            }
+            lines.add(Component.literal("§8退出游戏时不会删镜像；源文件改了/删了，下次启动自动同步"));
+            gg.renderComponentTooltip(this.font, lines, mouseX, mouseY);
         }
 
         if (hoverReload) {
@@ -3558,8 +3592,24 @@ public class CleanerScreen extends Screen {
             setStatus(ClientSettings.autoReload ? "自动 /reload：已开启" : "自动 /reload：已关闭");
             return true;
         }
+        if (mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 118 && mouseY < y + 134) {
+            if (com.yuneko.foliocleaner.compat.HookMirror.hookCount() > 0) {
+                setStatus("检测到 hook 适配器，镜像必须保持开启（否则它们不会生效）");
+                return true;
+            }
+            ClientSettings.mirrorHookAdapters = !ClientSettings.mirrorHookAdapters;
+            ClientSettings.touch();
+            if (ClientSettings.mirrorHookAdapters) {
+                var r = com.yuneko.foliocleaner.compat.HookMirror.sync();
+                setStatus("hook 适配器镜像：已开启"
+                        + (r.changed() ? "（已同步，重启后生效）" : "（无可同步项）"));
+            } else {
+                setStatus("hook 适配器镜像：已关闭（已存在的镜像不会自动删除）");
+            }
+            return true;
+        }
         if (ClientSettings.admin && !headerEditShown
-                && mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 126 && mouseY < y + 142) {
+                && mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 140 && mouseY < y + 156) {
             switchEditTarget();
             return true;
         }

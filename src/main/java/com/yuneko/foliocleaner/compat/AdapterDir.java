@@ -106,6 +106,31 @@ public final class AdapterDir {
                     "代码式：任意逻辑、可调别的 mod API", info.id()));
         }
 
+        // ★结构 hook（带 mixin 的 jar）：仍然归在 jar 类别，名字加 [hook] 前缀
+        try {
+            java.util.Set<String> mirrored = HookMirror.mirroredNames();
+            for (java.nio.file.Path hookJar : HookMirror.scanHooks()) {
+                String file = hookJar.getFileName().toString();
+                String stem = file.toLowerCase(java.util.Locale.ROOT).endsWith(".jar")
+                        ? file.substring(0, file.length() - 4) : file;
+                String id = "hook:" + stem;
+                boolean isMirrored = mirrored.contains(HookMirror.PREFIX + file);
+                out.add(new Entry(KIND_JAR, id, "[hook] " + stem, file,
+                        !ClientSettings.disabledGuards.contains(id),
+                        "结构 hook 适配器：需要镜像到 mods/ 才能加载 mixin；开关即时生效",
+                        isMirrored ? "已镜像到 mods/（重启后生效）" : "待镜像（重启后生效）"));
+            }
+            if (net.minecraftforge.fml.ModList.get().isLoaded("ars_nouveau")) {
+                String id = "hook:arsnouveau";
+                out.add(new Entry(KIND_JAR, id, "[hook] 新生魔艺·仪式（内置）", "内置",
+                        !ClientSettings.disabledGuards.contains(id),
+                        "命中「删除」规则的物品无法被仪式消耗（内置 hook）",
+                        "内置 · 随模组加载"));
+            }
+        } catch (Throwable ignored) {
+        }
+        HookMirror.invalidateCache();
+
         out.sort((a, b) -> {
             int k = a.kind().compareTo(b.kind());
             return k != 0 ? k : a.name().compareToIgnoreCase(b.name());
@@ -123,6 +148,18 @@ public final class AdapterDir {
     /** 切换某个适配器的开关（json/lua 用 id；jar 走 CraftGuards） */
     public static void setEnabled(Entry entry, boolean enabled) {
         if (entry == null) return;
+        // 结构 hook（含内置）：开关走 disabledGuards，hook 自己在运行期查 → 立即生效
+        if (entry.id() != null && entry.id().startsWith("hook:")) {
+            List<String> list = ClientSettings.disabledGuards;
+            if (enabled) {
+                list.remove(entry.id());
+            } else if (!list.contains(entry.id())) {
+                list.add(entry.id());
+            }
+            ClientSettings.touch();
+            cache = null;
+            return;
+        }
         if (KIND_JAR.equals(entry.kind())) {
             CraftGuards.setEnabled(entry.id(), enabled);
             cache = null;

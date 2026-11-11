@@ -151,6 +151,32 @@ public final class Rules {
 
     // ---------------------------------------------------------------- 查询
 
+    /**
+     * 这个物品是否被「删除」类规则命中 —— 给结构型 hook（祭坛/仪式/无界面合成）用。
+     *
+     * <p>口径和 {@code CombinerCraftGuard} 保持一致：只看 {@code action=remove} +
+     * {@code type=item} + <b>范围不限工作台类型</b> 的规则。结构型合成没有 RecipeType，
+     * 带类型限制的规则在这里无法判断，跳过以免误伤。
+     */
+    public static boolean isRemoved(net.minecraft.world.item.ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        net.minecraft.world.item.Item item = stack.getItem();
+        for (Rule rule : all()) {
+            try {
+                if (rule == null || !rule.enabled) continue;
+                if (!Rule.ACTION_REMOVE.equals(rule.action)) continue;
+                if (!Rule.TYPE_ITEM.equals(rule.type)) continue;
+                if (com.yuneko.foliocleaner.compat.ItemUtil.itemOf(rule.target) != item) continue;
+                for (Rule.Range range : rule.effectiveRanges()) {
+                    if (!range.hasType()) return true;   // 不限工作台 → 对结构型合成也生效
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+
     /** 实际生效的规则：本地 + 服务端（服务端在前，方便看哪些是强制的） */
     public static List<Rule> all() {
         List<Rule> merged = new ArrayList<>(SERVER.size() + CLIENT.size());

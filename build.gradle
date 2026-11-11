@@ -16,6 +16,12 @@ java {
     toolchain { languageVersion = JavaLanguageVersion.of(17) }
 }
 
+// ★ stubs/ 里是**只用于编译的桩**（例如别的模组的目标类签名）。
+//   Mixin 注解处理器要求 @Mixin(targets="…") 的目标类存在于 classpath，否则直接编译失败；
+//   把桩并进 main 源集喂给它，然后在 jar 任务里排除，最终产物里没有这些假类。
+sourceSets.main.java.srcDir 'stubs'
+
+
 minecraft {
     mappings channel: 'official', version: minecraft_version
 
@@ -33,6 +39,7 @@ mixin {
     // 文件名跟包名/产品名走（mod id 仍是历史值 jeicleaner，不能改）
     add sourceSets.main, "foliocleaner.refmap.json"
     config "foliocleaner.mixins.json"
+    config "foliocleaner.hooks.mixins.json"
 }
 
 repositories {
@@ -81,6 +88,9 @@ tasks.named('processResources', ProcessResources).configure {
 }
 
 jar {
+    // 编译桩不进产物（见上面对 stubs/ 的说明）
+    exclude 'com/hollingsworth/**'
+
     // 把 LuaJ 的类摊平进我们的 jar（它没有 META-INF 签名，安全）
     from(zipTree('libs/luaj-jse-3.0.1.jar')) {
         exclude 'META-INF/**'
@@ -89,7 +99,8 @@ jar {
     manifest {
         attributes([
                 // ★必须是磁盘上真实的配置文件名（mod id 是历史值 jeicleaner，不能拿来拼）
-                'MixinConfigs'          : "foliocleaner.mixins.json",
+                // 第一个是主配置；第二个是「结构 hook」（目标是别的模组，靠 FolioMixinPlugin 门控）
+                'MixinConfigs'          : "foliocleaner.mixins.json,foliocleaner.hooks.mixins.json",
                 'Specification-Title'   : mod_name,
                 'Specification-Vendor'  : mod_author,
                 'Specification-Version' : project.jar.archiveVersion,

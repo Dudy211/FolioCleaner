@@ -26,6 +26,8 @@ public class FolioCleaner {
         if (net.minecraftforge.fml.loading.FMLEnvironment.dist == net.minecraftforge.api.distmarker.Dist.CLIENT) {
             ClientSettings.load();
         }
+        // 把带 mixin 的「结构 hook 适配器」镜像到 mods/（下次启动由 FML 当 mod 加载）
+        com.yuneko.foliocleaner.compat.HookMirror.syncQuietly();
         LOGGER.info("[Folio Cleaner] 规则已加载：服务端 {} 条 / 本地 {} 条",
                 Rules.serverRules().size(), Rules.clientRules().size());
     }

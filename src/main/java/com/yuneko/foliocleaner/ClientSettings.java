@@ -72,6 +72,9 @@ public final class ClientSettings {
     /** 调试面板上次是开还是关（进游戏自动恢复；改完不用每次重按 F7） */
     public static boolean debugPanelOpen = false;
 
+    /** 把「结构 hook 适配器」（带 mixin 的 jar）镜像到 mods/（默认开；有 hook 时锁定开启） */
+    public static boolean mirrorHookAdapters = true;
+
     /** 调试面板：在任何容器界面上叠加槽位编号 */
     public static boolean debugOverlay = false;
     /** 适配器演练模式：命中只打日志，不清结果槽（作者验证用） */
@@ -127,6 +130,7 @@ public final class ClientSettings {
             if (obj.has("lastSearch")) lastSearch = obj.get("lastSearch").getAsString();
             if (obj.has("lastTab")) lastTab = obj.get("lastTab").getAsString();
             if (obj.has("editServer")) editServer = obj.get("editServer").getAsBoolean();
+            if (obj.has("mirrorHookAdapters")) mirrorHookAdapters = obj.get("mirrorHookAdapters").getAsBoolean();
             if (obj.has("debugOverlay")) debugOverlay = obj.get("debugOverlay").getAsBoolean();
             if (obj.has("adapterDryRun")) adapterDryRun = obj.get("adapterDryRun").getAsBoolean();
             if (obj.has("debugPanelX")) debugPanelX = obj.get("debugPanelX").getAsInt();
@@ -168,6 +172,7 @@ public final class ClientSettings {
             obj.addProperty("lastSearch", lastSearch);
             obj.addProperty("lastTab", lastTab);
             obj.addProperty("editServer", editServer);
+            obj.addProperty("mirrorHookAdapters", mirrorHookAdapters);
             obj.addProperty("debugOverlay", debugOverlay);
             obj.addProperty("adapterDryRun", adapterDryRun);
             obj.addProperty("debugPanelX", debugPanelX);
