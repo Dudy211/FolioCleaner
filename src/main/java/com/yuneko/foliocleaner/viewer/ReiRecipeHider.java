@@ -44,6 +44,9 @@ public final class ReiRecipeHider implements InvocationHandler {
     private static Object predicate;
     /** 只打一次错误日志，避免每次登录刷屏 */
     private static boolean loggedError;
+    /** 连续几次"类找不到"才判定为版本不匹配（避免早期加载时机导致永久放弃） */
+    private static int classMissCount;
+    private static final int CLASS_MISS_LIMIT = 3;
     /** 谓词接口本身（反射时反复要，缓存一份） */
     private static Class<?> predicateType;
 
@@ -101,8 +104,14 @@ public final class ReiRecipeHider implements InvocationHandler {
             }
             ViewerStatus.reiFilterInstalled = true;
         } catch (ClassNotFoundException e) {
-            // 类根本不在 → 没装 REI（或版本差得离谱），以后不用再试
-            ViewerStatus.reiFailed = true;
+            // 可能是「真的没这个类（版本不匹配）」也可能是「这次加载得太早」
+            // → 连续 3 次才判定失败，否则下次进世界/重载还会再试
+            classMissCount++;
+            if (classMissCount >= CLASS_MISS_LIMIT) {
+                ViewerStatus.reiFailed = true;
+                FolioCleaner.LOGGER.warn("[Folio Cleaner] REI 的类连续 {} 次找不到（版本不匹配？），"
+                        + "配方级隐藏只在 JEI 生效：{}", CLASS_MISS_LIMIT, String.valueOf(e));
+            }
         } catch (NoSuchMethodException | IllegalAccessException e) {
             // API 形状对不上（REI 版本差异）→ 也不再重试，但要说清楚
             if (!loggedError) {

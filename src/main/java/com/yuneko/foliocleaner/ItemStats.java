@@ -1,6 +1,10 @@
 package com.yuneko.foliocleaner;
 
+import com.yuneko.foliocleaner.viewer.Backends;
+import com.yuneko.foliocleaner.viewer.RecipeViewerBackend;
+import com.yuneko.foliocleaner.viewer.RuleMatcher;
 import net.minecraft.client.Minecraft;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.Ingredient;
@@ -113,10 +117,12 @@ public final class ItemStats {
         int skipped = 0;
         // 复用缓冲：同一条配方里重复出现的物品只计一次（两个槽都是木板 → 只算 1）
         Item[] seen = new Item[16];
+        java.util.Set<String> mcIds = new java.util.HashSet<>();
         try {
             RAW_USAGE.clear();
             RAW_OUTPUT.clear();
             for (Recipe<?> recipe : mc.level.getRecipeManager().getRecipes()) {
+                mcIds.add(recipe.getId().toString());
                 // 先做一遍「不过滤」的原始统计（死物品判定用），这一步和规则无关
                 try {
                     ItemStack rawResult = recipe.getResultItem(registryAccess);
@@ -177,6 +183,72 @@ public final class ItemStats {
         } catch (Throwable t) {
             FolioCleaner.LOGGER.warn("[Folio Cleaner] 统计配方用量时出错", t);
         }
+
+        // ★补一遍 viewer 视角：模组自建配方（不是 Recipe 实现，比如奥术铁砧几千条）
+        //   在 getRecipeManager() 里一条都没有 —— 不补的话毒瘤排行对它们是瞎的。
+        try {
+            RecipeViewerBackend backend = Backends.primary();
+            if (backend != null) {
+                java.util.Set<String> seenIds = new java.util.HashSet<>();
+                for (RecipeViewerBackend.RecipeRef ref : backend.allRecipes()) {
+                    if (ref == null) continue;
+                    String id = ref.id();
+                    if (id != null && !id.isEmpty()) {
+                        if (mcIds.contains(id)) continue;      // 原版表里已经有了
+                        if (!seenIds.add(id)) continue;
+                    }
+
+                    // 原始统计（死物品判定）
+                    if (ref.outputIds() != null) {
+                        for (String oid : ref.outputIds()) {
+                            Item it = itemOf(oid);
+                            if (it != null) RAW_OUTPUT.merge(it, 1, Integer::sum);
+                        }
+                    }
+                    if (ref.inputs() != null) {
+                        for (java.util.Set<String> slot : ref.inputs()) {
+                            if (slot == null) continue;
+                            for (String iid : slot) {
+                                Item it = itemOf(iid);
+                                if (it != null) RAW_USAGE.merge(it, 1, Integer::sum);
+                            }
+                        }
+                    }
+
+                    // 可见统计：和界面用同一套规则判断
+                    java.util.Set<String> typeIds = new java.util.LinkedHashSet<>();
+                    if (ref.categoryUid() != null) typeIds.add(ref.categoryUid());
+                    RuleMatcher.Facts facts = new RuleMatcher.Facts(id, ref.categoryUid(),
+                            ref.modId(), typeIds, ref.inputs(), ref.outputIds());
+                    if (!rules.isEmpty() && RuleMatcher.hides(facts)) {
+                        skipped++;
+                        continue;
+                    }
+
+                    count++;
+                    if (ref.outputIds() != null) {
+                        for (String oid : ref.outputIds()) {
+                            Item it = itemOf(oid);
+                            if (it != null) OUTPUT.merge(it, 1, Integer::sum);
+                        }
+                    }
+                    if (ref.inputs() != null) {
+                        java.util.Set<Item> slotSeen = new java.util.HashSet<>();
+                        for (java.util.Set<String> slot : ref.inputs()) {
+                            if (slot == null) continue;
+                            for (String iid : slot) {
+                                Item it = itemOf(iid);
+                                if (it == null || !slotSeen.add(it)) continue;
+                                USAGE.merge(it, 1, Integer::sum);
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            FolioCleaner.LOGGER.debug("[Folio Cleaner] viewer 配方统计失败：{}", String.valueOf(t));
+        }
+
         totalRecipes = count;
         deadCount = 0;
         try {
@@ -192,6 +264,17 @@ public final class ItemStats {
         builtFor = sig;
         FolioCleaner.LOGGER.debug("[Folio Cleaner] 统计完成：{} 条可见配方（跳过 {} 条已隐藏/删除），{} 个物品有用途",
                 count, skipped, USAGE.size());
+    }
+
+    private static Item itemOf(String id) {
+        try {
+            ResourceLocation rl = ResourceLocation.tryParse(id);
+            if (rl == null) return null;
+            Item it = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(rl);
+            return it == null || it == net.minecraft.world.item.Items.AIR ? null : it;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /**

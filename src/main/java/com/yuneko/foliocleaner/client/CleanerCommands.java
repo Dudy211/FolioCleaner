@@ -9,7 +9,6 @@ import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 import com.mojang.brigadier.tree.LiteralCommandNode;
-import com.yuneko.foliocleaner.Cleaner;
 import com.yuneko.foliocleaner.ClientSettings;
 import com.yuneko.foliocleaner.FolioCleaner;
 import com.yuneko.foliocleaner.Rule;
@@ -47,6 +46,7 @@ import java.util.List;
  * /foliocleaner unify rollback                     按清单精确撤销（被改过的文件会保留）
  * /foliocleaner unify wipe                         整个删掉 datapacks/foliocleaner 目录
  * /foliocleaner viewers                            看看 JEI / REI / EMI 三家的适配状态
+ * /foliocleaner diagnose                           当前后端的运行时自检（没客户端可看时用这个）
  * </pre>
  *
  * <p>配方类型例如 {@code minecraft:crafting}，省略表示不限。
@@ -155,6 +155,7 @@ public final class CleanerCommands {
                                 .then(Commands.literal("rollback").executes(ctx -> unifyRollback()))
                                 .then(Commands.literal("wipe").executes(ctx -> unifyWipe())))
                         .then(Commands.literal("viewers").executes(ctx -> viewers()))
+                        .then(Commands.literal("diagnose").executes(ctx -> diagnoseAll()))
                         .then(Commands.literal("debug")
                                 .executes(ctx -> debug("toggle"))
                                 .then(Commands.literal("on").executes(ctx -> debug("on")))
@@ -168,7 +169,28 @@ public final class CleanerCommands {
         dispatcher.register(Commands.literal("folio").redirect(root));
     }
 
+    /**
+     * 一个配方浏览器都没装时，图形界面没有意义（但规则文件本身仍然有效）。
+     * 装了 JEI / REI / EMI 任意一个，图形界面就应该能用 —— 这就是多 viewer 支持的目标。
+     */
+    private static boolean viewerMissing() {
+        if (com.yuneko.foliocleaner.viewer.Backends.any()) return false;
+        var player = Minecraft.getInstance().player;
+        if (player != null) {
+            player.displayClientMessage(Component.literal(
+                    "§e[Folio Cleaner] 没有检测到 JEI / REI / EMI：图形界面不可用。\n"
+                            + "§7规则仍然存在 config/foliocleaner/client.json，装了任一配方浏览器即可使用界面"), false);
+        }
+        return true;
+    }
+
+    /** 当前主后端（界面/指令统一用它） */
+    private static com.yuneko.foliocleaner.viewer.RecipeViewerBackend backend() {
+        return com.yuneko.foliocleaner.viewer.Backends.primary();
+    }
+
     private static int openGui() {
+        if (viewerMissing()) return 0;
         Minecraft.getInstance().setScreen(new CleanerScreen());
         return Command.SINGLE_SUCCESS;
     }
@@ -213,8 +235,16 @@ public final class CleanerCommands {
     }
 
     private static int verify() {
-        var report = Cleaner.report();
-        if (report.isEmpty()) return feedback("还没有隐藏任何配方（或者还没进世界）。");
+        if (viewerMissing()) return 0;
+        var b = backend();
+        if (b != null && !"jei".equals(b.id())) {
+            return verifyGeneric(b);
+        }
+        var report = b == null ? List.<String>of() : b.report();
+        if (report.isEmpty()) {
+            return feedback(b == null ? "没有可用的配方浏览器。"
+                    : "还没有自检报告（" + b.label() + " 可能还没同步过，或该后端不提供逐类自检）。");
+        }
         var player = Minecraft.getInstance().player;
         if (player == null) return Command.SINGLE_SUCCESS;
         player.displayClientMessage(Component.literal("§6[Folio Cleaner] §f隐藏自检："), false);
@@ -226,23 +256,83 @@ public final class CleanerCommands {
         return Math.max(1, report.size());
     }
 
+    /** REI / EMI 的通用自检：按分类统计「总条数 / 被规则命中」，一眼看出是不是真的生效 */
+    private static int verifyGeneric(com.yuneko.foliocleaner.viewer.RecipeViewerBackend backend) {
+        java.util.List<com.yuneko.foliocleaner.viewer.RecipeViewerBackend.RecipeRef> all;
+        try {
+            all = backend.allRecipes();
+        } catch (Throwable t) {
+            return feedback("读不到配方列表：" + t);
+        }
+        if (all.isEmpty()) return feedback(backend.label() + " 还没收录配方。");
+
+        java.util.Map<String, int[]> perType = new java.util.TreeMap<>();
+        int hiddenTotal = 0;
+        for (var ref : all) {
+            String uid = ref.categoryUid() == null || ref.categoryUid().isEmpty() ? "?" : ref.categoryUid();
+            int[] stat = perType.computeIfAbsent(uid, k -> new int[2]);
+            stat[0]++;
+            java.util.Set<String> typeIds = new java.util.LinkedHashSet<>();
+            if (ref.categoryUid() != null) typeIds.add(ref.categoryUid());
+            var facts = new com.yuneko.foliocleaner.viewer.RuleMatcher.Facts(
+                    ref.id(), ref.categoryUid(), ref.modId(), typeIds, ref.inputs(), ref.outputIds());
+            if (com.yuneko.foliocleaner.viewer.RuleMatcher.hides(facts)) {
+                stat[1]++;
+                hiddenTotal++;
+            }
+        }
+
+        var player = Minecraft.getInstance().player;
+        if (player == null) return Command.SINGLE_SUCCESS;
+        player.displayClientMessage(Component.literal("§6[Folio Cleaner] §f隐藏自检 §8（"
+                + backend.label() + "，共 " + all.size() + " 条，命中 " + hiddenTotal + "）"), false);
+        int shown = 0;
+        for (var e : perType.entrySet()) {
+            if (shown++ >= 12) {
+                player.displayClientMessage(Component.literal("§7… 还有 " + (perType.size() - 12) + " 个分类"), false);
+                break;
+            }
+            int[] stat = e.getValue();
+            String mark = stat[1] == 0 ? "§8○" : (stat[1] == stat[0] ? "§a✔" : "§e◐");
+            player.displayClientMessage(Component.literal(mark + " §7" + e.getKey()
+                    + " §f" + stat[1] + "§7/" + stat[0]), false);
+        }
+        player.displayClientMessage(Component.literal(
+                "§7✔=整类清空 §e◐=部分隐藏 §8○=没命中（规则可能没开/范围不对）"), false);
+        if ("emi".equals(backend.id())) {
+            player.displayClientMessage(Component.literal(
+                    "§8注：EMI 的配方隐藏只在启动时生效，这里显示的是「下次启动会隐藏多少」"), false);
+        }
+        return Math.max(1, hiddenTotal);
+    }
+
     private static int widen() {
         int n = Rules.clearTypeFilters();
         if (n == 0) return feedback("所有规则本来就不限工作台，无需修改。");
-        return feedback("已把 " + n + " 条规则的「范围」改成不限类型，重新应用后在 JEI 里试按 U。");
+        return feedback("已把 " + n + " 条规则的「范围」改成不限类型，重新应用后再看配方浏览器。");
     }
 
     private static int diag(ResourceLocation id) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null) return feedback("需要先进入世界。");
-        if (Cleaner.RUNTIME == null) return feedback("JEI 还没就绪，稍等一下再试。");
+        var backend = backend();
+        if (backend == null || !backend.ready()) {
+            return feedback("配方浏览器还没就绪，稍等一下再试。");
+        }
 
         net.minecraft.world.item.Item item = BuiltInRegistries.ITEM.get(id);
         if (item == net.minecraft.world.item.Items.AIR) return feedback("找不到物品：" + id);
 
+        // 非 JEI：用后端的全量配方表（连模组自建配方一起算），口径和界面完全一致
+        if (!"jei".equals(backend.id())) {
+            return diagGeneric(id, item, backend);
+        }
+
         var recipeManager = mc.level.getRecipeManager();
         var registryAccess = mc.level.registryAccess();
-        var jei = Cleaner.RUNTIME.getRecipeManager();
+        var jeiRuntime = com.yuneko.foliocleaner.Cleaner.RUNTIME;
+        if (jeiRuntime == null) return feedback("JEI 还没就绪，稍等一下再试。");
+        var jei = jeiRuntime.getRecipeManager();
         var selector = com.yuneko.foliocleaner.Selector.of(Rules.all(), jei);
         var probe = new net.minecraft.world.item.ItemStack(item);
 
@@ -308,6 +398,70 @@ public final class CleanerCommands {
         return Math.max(1, matched);
     }
 
+    /** REI / EMI 的通用诊断：按后端自己列的配方逐条核对 */
+    private static int diagGeneric(ResourceLocation id, net.minecraft.world.item.Item item,
+                                   com.yuneko.foliocleaner.viewer.RecipeViewerBackend backend) {
+        String itemId = id.toString();
+        java.util.List<com.yuneko.foliocleaner.viewer.RecipeViewerBackend.RecipeRef> all;
+        try {
+            all = backend.allRecipes();
+        } catch (Throwable t) {
+            return feedback("读不到配方列表：" + t);
+        }
+        if (all.isEmpty()) {
+            return feedback(backend.label() + " 还没收录配方（等它初始化完 / 进一次配方界面再试）。");
+        }
+
+        int total = all.size();
+        int asIngredient = 0, asOutput = 0, matched = 0;
+        List<String> samples = new ArrayList<>();
+        for (var ref : all) {
+            boolean uses = false;
+            if (ref.inputs() != null) {
+                for (var slot : ref.inputs()) {
+                    if (slot != null && slot.contains(itemId)) {
+                        uses = true;
+                        break;
+                    }
+                }
+            }
+            boolean produces = ref.outputIds() != null && ref.outputIds().contains(itemId);
+            if (!uses && !produces) continue;
+
+            if (uses) asIngredient++;
+            if (produces) asOutput++;
+
+            java.util.Set<String> typeIds = new java.util.LinkedHashSet<>();
+            if (ref.categoryUid() != null) typeIds.add(ref.categoryUid());
+            var facts = new com.yuneko.foliocleaner.viewer.RuleMatcher.Facts(
+                    ref.id(), ref.categoryUid(), ref.modId(), typeIds, ref.inputs(), ref.outputIds());
+            boolean hit = com.yuneko.foliocleaner.viewer.RuleMatcher.hides(facts);
+            if (hit) matched++;
+
+            if (samples.size() < 10) {
+                samples.add("§8· §f" + ref.id() + " §7[" + ref.categoryUid() + "§7]"
+                        + (hit ? " §a命中" : " §c未命中"));
+            }
+        }
+
+        var player = Minecraft.getInstance().player;
+        if (player == null) return Command.SINGLE_SUCCESS;
+        player.displayClientMessage(Component.literal("§6[Folio Cleaner] §f诊断 " + id
+                + " §8（" + backend.label() + "）"), false);
+        player.displayClientMessage(Component.literal("§7配方总数 §f" + total
+                + " §8| §7作为原料 §f" + asIngredient + " §7作为产物 §f" + asOutput), false);
+        player.displayClientMessage(Component.literal("§7当前规则命中 §f" + matched
+                + " §7（" + backend.label() + " 的口径与界面一致）"), false);
+        for (String line : samples) {
+            player.displayClientMessage(Component.literal(line), false);
+        }
+        if (matched == 0 && asIngredient + asOutput > 0) {
+            player.displayClientMessage(Component.literal(
+                    "§e→ 有配方但规则没命中：检查「原料」开关是否开了、范围是否选对。"), false);
+        }
+        return Math.max(1, matched);
+    }
+
     private static int list(CommandContext<CommandSourceStack> ctx) {        if (Rules.size() == 0) {
             return feedback("当前没有任何隐藏规则。用 /foliocleaner 打开界面添加。");
         }
@@ -353,12 +507,21 @@ public final class CleanerCommands {
     }
 
     private static int apply() {
-        int hidden = Cleaner.applyNow();
-        if (hidden < 0) {
-            return feedback("现在还不能应用（需要先进入世界，且 JEI 已加载）。");
+        if (viewerMissing()) return 0;
+        var b = backend();
+        if (b == null || !b.ready()) {
+            return feedback("现在还不能应用（需要先进入世界，且配方浏览器已就绪）。");
         }
-        return feedback("已应用规则：隐藏 " + hidden + " 条配方、" + Cleaner.lastHiddenItems() + " 个物品，用时 "
-                + Cleaner.lastApplyMs() + "ms。");
+        com.yuneko.foliocleaner.viewer.Backends.requestApply();
+        for (var each : com.yuneko.foliocleaner.viewer.Backends.all()) {
+            try {
+                each.applyNow();
+            } catch (Throwable ignored) {
+            }
+        }
+        var st = b.status();
+        return feedback("已应用规则（" + b.label() + "）：隐藏 " + st.hiddenRecipes() + " 条配方、"
+                + st.hiddenItems() + " 个物品，用时 " + st.ms() + "ms。");
     }
 
     /**
@@ -373,6 +536,7 @@ public final class CleanerCommands {
      * </pre>
      */
     private static int debug(String op) {
+        if (viewerMissing()) return 0;
         var mc = Minecraft.getInstance();
         var screen = mc.screen;
         boolean container = screen instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen<?>;
@@ -413,46 +577,40 @@ public final class CleanerCommands {
     }
 
     /** 三家的适配状态：装没装 / 配方级隐藏挂上没有 / 要不要重开游戏 */
+    /**
+     * 按「实际装了什么」列出能力 —— 不再假装三家都一样。
+     *
+     * <p>没装 JEI 时这一条是唯一的排障入口：图形界面不可用，但配方 id 隐藏 / 跨 viewer tag 仍然有效。
+     */
+    /** 后端自检：没客户端可看时，这是唯一的现场 */
+    private static int diagnoseAll() {
+        var player = Minecraft.getInstance().player;
+        if (player == null) return Command.SINGLE_SUCCESS;
+        var backend = backend();
+        if (backend == null) return feedback("没有可用的配方浏览器。");
+
+        player.displayClientMessage(Component.literal("§6[Folio Cleaner] §f后端自检 §8（"
+                + backend.label() + "）"), false);
+        var lines = backend.diagnose();
+        if (lines.isEmpty()) {
+            player.displayClientMessage(Component.literal("§7该后端没有提供自检信息。"), false);
+        } else {
+            for (String line : lines) player.displayClientMessage(Component.literal(line), false);
+        }
+        player.displayClientMessage(Component.literal(
+                "§8物品规则=" + com.yuneko.foliocleaner.viewer.RuleMatcher.hiddenItems().size()
+                        + " 配方级规则=" + (com.yuneko.foliocleaner.viewer.RuleMatcher.hasRecipeRules()
+                        ? "有" : "无")
+                        + " 同步提示=" + (backend.applyHint() == null ? "无（可实时）" : "需要重开")), false);
+        return Command.SINGLE_SUCCESS;
+    }
+
     private static int viewers() {
-        boolean jei = net.minecraftforge.fml.ModList.get().isLoaded("jei");
-        boolean rei = net.minecraftforge.fml.ModList.get().isLoaded("roughlyenoughitems");
-        boolean emi = net.minecraftforge.fml.ModList.get().isLoaded("emi");
-        java.util.List<String> mods = new java.util.ArrayList<>();
-        if (jei) mods.add("JEI");
-        if (rei) mods.add("REI");
-        if (emi) mods.add("EMI");
-
         StringBuilder sb = new StringBuilder();
-        sb.append("§7已装：§f").append(mods.isEmpty() ? "（都没有）" : String.join(" / ", mods));
-        sb.append("\n§7物品级跨 viewer（c:hidden_from_recipe_viewers tag）：§f")
-                .append(com.yuneko.foliocleaner.Rules.hiddenItemIds().size())
-                .append(" 个物品 §8（要生成数据包 + /reload 才生效）");
-
-        sb.append("\n§7JEI 配方级隐藏：");
-        sb.append(jei ? "§a完整（原料/产物/范围/分类都能匹配）" : "§8未装");
-
-        sb.append("\n§7REI 配方级隐藏：");
-        if (!rei) {
-            sb.append("§8未装");
-        } else if (com.yuneko.foliocleaner.viewer.ViewerStatus.reiFilterInstalled) {
-            sb.append("§a已挂（实时）§8· 只按配方 id / modid 匹配");
-        } else if (com.yuneko.foliocleaner.viewer.ViewerStatus.reiFailed) {
-            sb.append("§c挂载失败 §8（看日志；版本差异）");
-        } else {
-            sb.append("§e待挂 §8· 进一次世界就会自动装");
+        for (String line : com.yuneko.foliocleaner.viewer.Viewers.capabilityLines()) {
+            sb.append(line).append('\n');
         }
-
-        sb.append("\n§7EMI 配方级隐藏：");
-        if (!emi) {
-            sb.append("§8未装");
-        } else if (com.yuneko.foliocleaner.viewer.ViewerStatus.emiPluginRan) {
-            sb.append("§a初始化期已注册（移除 ")
-                    .append(com.yuneko.foliocleaner.viewer.ViewerStatus.emiRemoved)
-                    .append(" 条）§8· 改完规则要重开游戏");
-        } else {
-            sb.append("§c未注册 §8（看日志）");
-        }
-        sb.append("\n§8说明：item / category 规则在 REI/EMI 里不生效 —— 它们只有配方 id 这一层接口");
+        sb.append("§8说明：REI / EMI 只有「配方 id」这一层接口 —— item / category / 工作台范围规则在它们那里不生效");
         feedbackMulti(sb.toString());
         return Command.SINGLE_SUCCESS;
     }

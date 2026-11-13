@@ -1,6 +1,5 @@
 package com.yuneko.foliocleaner.viewer;
 
-import com.yuneko.foliocleaner.HiddenRecipes;
 import com.yuneko.foliocleaner.FolioCleaner;
 import com.yuneko.foliocleaner.Rules;
 import dev.emi.emi.api.EmiEntrypoint;
@@ -34,22 +33,32 @@ public final class EmiRecipeHiderPlugin implements EmiPlugin {
             if (Rules.size() == 0) {
                 Rules.load();
             }
-            int[] removed = {0};
+            // ★用 Set 去重：EMI 可能对同一配方多次求值，直接 ++ 会把数字算高
+            java.util.Set<ResourceLocation> removed = new java.util.HashSet<>();
+            // ★判断口径与运行期完全一致（同一份 RuleMatcher + EmiFacts）：
+            //   以前这里只按配方 id / modid，物品级和分类级规则在 EMI 里是失效的。
             registry.removeRecipes(recipe -> {
                 try {
                     if (recipe == null) return false;
                     ResourceLocation id = recipe.getId();
-                    if (id == null || !HiddenRecipes.hides(id)) return false;
-                    removed[0]++;
+                    if (id == null) return false;
+                    com.yuneko.foliocleaner.viewer.RuleMatcher.Facts facts =
+                            com.yuneko.foliocleaner.viewer.EmiFacts.of(recipe);
+                    if (facts == null || !com.yuneko.foliocleaner.viewer.RuleMatcher.hides(facts)) return false;
+                    removed.add(id);
                     return true;
                 } catch (Throwable t) {
                     return false;
                 }
             });
+            // ★物品级隐藏：推到 EMI 的插件过滤链（bake=false —— EMI 紧接着自己会 bakeFiltered，
+            //   这里抢着 bake 反而可能和它的重载线程打架）
+            EmiBackend.pushItemFilter(false);
+
             ViewerStatus.emiPluginRan = true;
-            ViewerStatus.emiRemoved = removed[0];
+            ViewerStatus.emiRemoved = removed.size();
             FolioCleaner.LOGGER.info("[Folio Cleaner] 已向 EMI 注册配方过滤器（移除 {} 条；规则改动需重开游戏）",
-                    removed[0]);
+                    removed.size());
         } catch (Throwable t) {
             FolioCleaner.LOGGER.warn("[Folio Cleaner] 注册 EMI 配方过滤器失败", t);
         }

@@ -9,15 +9,8 @@ import com.yuneko.foliocleaner.LazyPages;
 import com.yuneko.foliocleaner.client.CategoryStats;
 import com.yuneko.foliocleaner.Rule;
 import com.yuneko.foliocleaner.Rules;
-import mezz.jei.api.gui.IRecipeLayoutDrawable;
-import mezz.jei.api.ingredients.IIngredientType;
-import mezz.jei.api.recipe.IFocus;
-import mezz.jei.api.recipe.IFocusGroup;
-import mezz.jei.api.recipe.IRecipeManager;
-import mezz.jei.api.recipe.RecipeIngredientRole;
-import mezz.jei.api.recipe.RecipeType;
-import mezz.jei.api.recipe.category.IRecipeCategory;
-import mezz.jei.api.runtime.IJeiRuntime;
+import com.yuneko.foliocleaner.viewer.Backends;
+import com.yuneko.foliocleaner.viewer.RecipeViewerBackend;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -98,36 +91,7 @@ public class CleanerScreen extends Screen {
     private final List<Entry> filtered = new ArrayList<>();
     /** 属性台可点击区域（每帧绘制时重算，点击时按 action 派发） */
     private final List<PropHit> propHits = new ArrayList<>();
-    /** 配方预览缓存：配方 id → JEI 布局（hover 每帧复用，避免反复构建） */
-    private final Map<String, IRecipeLayoutDrawable<?>> previewCache = new HashMap<>();
-
-    /** 空 focus：构建预览布局时不需要任何搜索焦点 */
-    private static final IFocusGroup EMPTY_FOCUS = new IFocusGroup() {
-        @Override
-        public boolean isEmpty() {
-            return true;
-        }
-
-        @Override
-        public List<IFocus<?>> getAllFocuses() {
-            return List.of();
-        }
-
-        @Override
-        public Stream<IFocus<?>> getFocuses(RecipeIngredientRole role) {
-            return Stream.empty();
-        }
-
-        @Override
-        public <T> Stream<IFocus<T>> getFocuses(IIngredientType<T> type) {
-            return Stream.empty();
-        }
-
-        @Override
-        public <T> Stream<IFocus<T>> getFocuses(IIngredientType<T> type, RecipeIngredientRole role) {
-            return Stream.empty();
-        }
-    };
+    /** 配方预览缓存：配方 id → 后端给的布局对象（hover 每帧复用，避免反复构建） */
     private boolean entriesLoaded;
     private Tab entriesLoadedFor;
 
@@ -159,7 +123,7 @@ public class CleanerScreen extends Screen {
     /** 同步预览弹窗 */
     private boolean previewOpen;
     private int previewScroll;
-    private Cleaner.Preview previewData;
+    private RecipeViewerBackend.PlanPreview previewData;
     /** 范围弹窗当前是在给哪条规则改（-1 = 属性台默认值） */
     private int pickerForRule = -1;
 
@@ -506,12 +470,23 @@ public class CleanerScreen extends Screen {
 
         int rx = panelX() + panelW() - 8;
         addRenderableWidget(Button.builder(Component.literal("§e同步"), b -> {
-            if (!Cleaner.hasPendingChanges()) {
-                setStatus("规则已经是最新的");
+            RecipeViewerBackend backend = backend();
+            if (backend != null && backend.applyHint() != null) {
+                // 有一部分规则不能立即生效（例如 EMI 只能用数据包配方时才需要重启）——
+                // 先把**能做的**做掉（物品级是实时的），再如实说剩下哪些要重开
+                try {
+                    backend.applyNow();
+                } catch (Throwable ignored) {
+                }
+                setStatus(backend.applyHint());
+                return;
+            }
+            if (backend == null || !backend.hasPendingChanges()) {
+                setStatus(backend == null ? "没有可用的配方浏览器" : "规则已经是最新的");
                 return;
             }
             if (ClientSettings.skipPreview) {
-                Cleaner.applyPending();
+                backend.applyNow();
                 setStatus("正在同步规则…");
                 return;
             }
@@ -536,7 +511,7 @@ public class CleanerScreen extends Screen {
 
         addRenderableWidget(Button.builder(Component.literal("刷新"), b -> {
             entriesLoaded = false;
-            Cleaner.requestApply();
+            Backends.requestApply();
             setStatus("已重新计算");
         }).bounds(rx - 49, fy, 46, 18).build());
 
@@ -612,6 +587,11 @@ public class CleanerScreen extends Screen {
         if (itemButton != null) itemButton.visible = itemTab;
     }
 
+    /** 当前主后端；没有任何可用浏览器时返回 null */
+    private static RecipeViewerBackend backend() {
+        return Backends.primary();
+    }
+
     private void setStatus(String message) {
         this.status = message;
         this.statusUntil = System.currentTimeMillis() + 4000L;
@@ -628,7 +608,6 @@ public class CleanerScreen extends Screen {
     private void ensureEntries() {
         if (entriesLoaded && entriesLoadedFor == tab) return;
         entries.clear();
-        previewCache.clear();
         entriesLoadedFor = tab;
         switch (tab) {
             case ITEM -> loadItems();
@@ -714,7 +693,7 @@ public class CleanerScreen extends Screen {
         rebuildFiltered();
         setStatus(mode == 0
                 ? "毒瘤 · 按物品：只统计 MC 配方（数据包/原版）"
-                : "毒瘤 · 按分类：包含模组自建的 JEI 配方");
+                : "毒瘤 · 按分类：包含模组自建配方（" + (backend() == null ? "?" : backend().label()) + "）");
     }
 
     /** 重复组：key → 组（绘制时按时间轮换图标用） */
@@ -769,9 +748,28 @@ public class CleanerScreen extends Screen {
     private void loadRecipes() {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null) return;
+
         List<Entry> list = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+
+        // ① viewer 视角：包含模组自建的配方（不是 Recipe 实现的那种）。
+        //    JEI 那边拿不到 id，所以只有 REI / EMI 会返回内容。
+        RecipeViewerBackend backend = backend();
+        if (backend != null) {
+            try {
+                for (RecipeViewerBackend.RecipeRef ref : backend.allRecipes()) {
+                    if (ref == null || ref.id() == null || ref.id().isEmpty()) continue;
+                    if (!seen.add(ref.id())) continue;
+                    list.add(refEntry(ref));
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        // ② 原版 RecipeManager 兜底：把 viewer 没收录的补上
         for (Recipe<?> recipe : mc.level.getRecipeManager().getRecipes()) {
             ResourceLocation id = recipe.getId();
+            if (!seen.add(id.toString())) continue;
             ResourceLocation typeId = BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType());
             String type = typeId == null ? "?" : typeId.toString();
             ItemStack result = ItemStack.EMPTY;
@@ -786,6 +784,14 @@ public class CleanerScreen extends Screen {
         }
         list.sort(Comparator.comparing(Entry::id));
         entries.addAll(list);
+    }
+
+    /** 把后端的配方摘要变成列表条目 */
+    private static Entry refEntry(RecipeViewerBackend.RecipeRef ref) {
+        String type = ref.categoryUid() == null || ref.categoryUid().isEmpty() ? "?" : ref.categoryUid();
+        ItemStack out = ref.output() == null ? ItemStack.EMPTY : ref.output();
+        Component name = out.isEmpty() ? Component.literal(type) : out.getHoverName();
+        return new Entry(Tab.RECIPE, ref.id(), name, ref.id() + "  [" + type + "]", out);
     }
 
     /**
@@ -1095,8 +1101,9 @@ public class CleanerScreen extends Screen {
         int cursor = cx - 8;
         int titleEnd = x + 8 + this.font.width("Folio Cleaner") + 6;
 
-        if (Cleaner.hasPendingChanges()) {
-            String warn = Cleaner.isSyncing() ? "同步中" : "未同步·点同步";
+        RecipeViewerBackend backend = backend();
+        if (backend != null && backend.hasPendingChanges()) {
+            String warn = backend.isSyncing() ? "同步中" : "未同步·点同步";
             int ww = this.font.width(warn);
             int wx = cursor - ww;
             if (wx > titleEnd + 4) {
@@ -2423,13 +2430,18 @@ public class CleanerScreen extends Screen {
             }
             boolean hoveredRow = mouseX >= x && mouseX <= x + w
                     && mouseY >= rowY && mouseY < rowY + RULE_ROW_H;
-            if (hoveredRow) {
-                // 编辑（···）与删除（×）两个热区
-                gg.drawString(this.font, "···", x + w - 30, rowY + 4, COLOR_DIM, false);
-                gg.drawString(this.font, "×", x + w - 11, rowY + 4, 0xFFFF6B6B, false);
-            } else {
-                gg.drawString(this.font, "×", x + w - 11, rowY + 4, 0xFF8A5555, false);
-            }
+            // 行尾两个热区：编辑（···） right-30..right-14，删除（×） right-14..right
+            int right = x + w;
+            boolean onEdit = hoveredRow && mouseX >= right - 30 && mouseX < right - 14;
+            boolean onDelete = hoveredRow && mouseX >= right - 14;
+
+            // ★「···」必须常显：以前只在悬浮时才画，静止状态等于没有编辑入口
+            if (onEdit) gg.fill(right - 30, rowY + 2, right - 14, rowY + RULE_ROW_H - 2, 0x40FFC46B);
+            if (onDelete) gg.fill(right - 14, rowY + 2, right, rowY + RULE_ROW_H - 2, 0x40FF6B6B);
+            gg.drawString(this.font, "···", right - 29, rowY + 4,
+                    onEdit ? COLOR_TEXT : 0xFF7E8AA0, false);
+            gg.drawString(this.font, "×", right - 11, rowY + 4,
+                    onDelete ? 0xFFFF6B6B : 0xFF955F5F, false);
         }
         gg.disableScissor();
 
@@ -2449,8 +2461,10 @@ public class CleanerScreen extends Screen {
         if (!message.isEmpty()) {
             gg.drawString(this.font, trim(message, maxW), x, y, COLOR_OK, false);
         } else {
-            String info = "隐藏配方 " + Cleaner.lastHiddenRecipes() + " · 物品 " + Cleaner.lastHiddenItems()
-                    + " · " + Cleaner.lastApplyMs() + "ms";
+            RecipeViewerBackend.Status st = backend() == null
+                    ? RecipeViewerBackend.Status.NONE : backend().status();
+            String info = "隐藏配方 " + st.hiddenRecipes() + " · 物品 " + st.hiddenItems()
+                    + " · " + st.ms() + "ms";
             gg.drawString(this.font, trim(info, maxW), x, y, COLOR_FAINT, false);
         }
     }
@@ -2481,40 +2495,42 @@ public class CleanerScreen extends Screen {
                     + " · 范围 " + (selectedType.isEmpty() ? "全部" : shortType(selectedType))));
         } else if (entry.tab() == Tab.RECIPE) {
             lines.add(Component.literal("§7点击：隐藏这一条配方"));
-            lines.add(Component.literal("§8（JEI 预览不可用：可能没进过 JEI 界面或该配方未注册）"));
+            RecipeViewerBackend pv = backend();
+            String label = pv == null ? "配方浏览器" : pv.label();
+            lines.add(Component.literal(pv != null && pv.ready()
+                    ? "§8（" + label + " 没有这条配方的画面 —— 可能该配方未注册 / 预览不可用）"
+                    : "§8（" + label + " 还没就绪）"));
         }
         gg.renderComponentTooltip(this.font, lines, mouseX, mouseY);
     }
 
     /**
-     * 悬浮配方条目时画 JEI 的配方布局（合成台 3×3、熔炉、切石机……都按 JEI 自己的
-     * {@link IRecipeCategory} 渲染，所以和 JEI 里看到的一模一样）。
+     * 悬浮配方条目时，请当前配方浏览器画它的配方布局
+     * （合成台 3×3、熔炉、切石机……都用浏览器自己的渲染器，所以和里面看到的一模一样）。
+     *
+     * <p>这里**不出现任何 viewer 的类型** —— 布局对象是不透明的
+     * {@link RecipeViewerBackend.Preview}，怎么画由后端决定。
      *
      * @return true = 已经画了预览（调用方不要再画文字 tooltip）
      */
     private boolean drawRecipePreview(GuiGraphics gg, Entry entry, int mouseX, int mouseY) {
-        IJeiRuntime runtime = Cleaner.RUNTIME;
-        if (runtime == null || Minecraft.getInstance().level == null) return false;
+        if (!Backends.previewAvailable()) return false;
+        if (Minecraft.getInstance().level == null) return false;
 
-        IRecipeLayoutDrawable<?> drawable = previewCache.get(entry.id());
-        if (drawable == null) {
-            drawable = buildPreview(runtime, entry.id());
-            if (drawable == null) return false;
-            if (previewCache.size() > 24) previewCache.clear();
-            previewCache.put(entry.id(), drawable);
-        }
+        RecipeViewerBackend backend = Backends.primary();
+        if (backend == null) return false;
 
-        int pw;
-        int ph;
+        RecipeViewerBackend.Preview preview;
         try {
-            IRecipeCategory<?> category = drawable.getRecipeCategory();
-            pw = category.getWidth();
-            ph = category.getHeight();
-            if (pw <= 0 || ph <= 0) return false;
+            preview = backend.preview(entry.id());
         } catch (Throwable t) {
-            previewCache.remove(entry.id());
             return false;
         }
+        if (preview == null) return false;
+
+        int pw = preview.width();
+        int ph = preview.height();
+        if (pw <= 0 || ph <= 0) return false;
 
         int pad = 5;
         int boxW = pw + pad * 2;
@@ -2536,50 +2552,14 @@ public class CleanerScreen extends Screen {
         gg.renderOutline(px, py, boxW, boxH, COLOR_EDGE);
 
         try {
-            drawable.setPosition(px + pad, py + pad);
-            drawable.drawRecipe(gg, mouseX, mouseY);
-            drawable.drawOverlays(gg, mouseX, mouseY);
+            preview.render(gg, px + pad, py + pad, mouseX, mouseY);
         } catch (Throwable t) {
-            // JEI 内部绘制失败：作废缓存并回退到文字提示
-            previewCache.remove(entry.id());
+            // 后端内部绘制失败：回退到文字提示
             return false;
         }
 
         gg.drawString(this.font, trim(title, titleW), tx, ty, COLOR_TEXT, false);
         return true;
-    }
-
-    /** 按配方 id 构建 JEI 布局；拿不到（JEI 没注册 / 非原版配方）返回 null */
-    private IRecipeLayoutDrawable<?> buildPreview(IJeiRuntime runtime, String entryId) {
-        try {
-            ResourceLocation id = ResourceLocation.tryParse(entryId);
-            var level = Minecraft.getInstance().level;
-            if (id == null || level == null) return null;
-
-            Recipe<?> recipe = level.getRecipeManager().byKey(id).orElse(null);
-            if (recipe == null) return null;
-
-            ResourceLocation typeId = BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType());
-            if (typeId == null) return null;
-
-            IRecipeManager jeiRecipes = runtime.getRecipeManager();
-            var typeOpt = jeiRecipes.getRecipeType(typeId);
-            if (typeOpt.isEmpty()) return null;
-
-            return createPreviewDrawable(jeiRecipes, typeOpt.get(), recipe);
-        } catch (Throwable t) {
-            return null;
-        }
-    }
-
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private static IRecipeLayoutDrawable<?> createPreviewDrawable(IRecipeManager jeiRecipes,
-                                                                  RecipeType<?> type,
-                                                                  Recipe<?> recipe) {
-        IRecipeCategory category = jeiRecipes.getRecipeCategory(type);
-        if (category == null) return null;
-        Object drawable = jeiRecipes.createRecipeLayoutDrawable(category, recipe, EMPTY_FOCUS).orElse(null);
-        return (IRecipeLayoutDrawable<?>) drawable;
     }
 
     // ---------------------------------------------------------------- 规则编辑弹窗
@@ -2731,9 +2711,10 @@ public class CleanerScreen extends Screen {
     }
 
     private void openPreview() {
-        Cleaner.Preview p = Cleaner.previewNow();
+        RecipeViewerBackend backend = backend();
+        RecipeViewerBackend.PlanPreview p = backend == null ? null : backend.planPreview();
         if (p == null) {
-            setStatus("还没进世界，或 JEI 未就绪");
+            setStatus("还没进世界，或配方浏览器未就绪");
             return;
         }
         this.previewData = p;
@@ -2756,7 +2737,7 @@ public class CleanerScreen extends Screen {
         gg.drawString(this.font, "§e同步预览", x + 8, y + 6, COLOR_TEXT, false);
         gg.fill(x + 8, y + 19, x + w - 8, y + 20, COLOR_EDGE);
 
-        Cleaner.Preview p = previewData;
+        RecipeViewerBackend.PlanPreview p = previewData;
         int recipes = p == null ? 0 : p.recipes();
         int items = p == null ? 0 : p.items();
         int cats = p == null ? 0 : p.categories();
@@ -2829,7 +2810,7 @@ public class CleanerScreen extends Screen {
         }
         if (mouseX >= x + w - 76 && mouseX <= x + w - 8 && mouseY >= by && mouseY < by + 18) {
             previewOpen = false;
-            Cleaner.applyPending();
+            if (backend() != null) backend().applyNow();
             setStatus("正在同步规则…");
             return true;
         }
@@ -3285,7 +3266,7 @@ public class CleanerScreen extends Screen {
                 com.yuneko.foliocleaner.CleanerNetwork.broadcast(server);
             });
             // ★改完立刻生效：光写设置不会触发任何 apply（以前切到数据包要等下一次改规则才生成）
-            com.yuneko.foliocleaner.Cleaner.requestApplyDelayed(2);
+            Backends.requestApplyDelayed(2);
             setStatus("统一实现方式：" + unifyModeLabel(mode) + "（已写入服务端设置）");
             return;
         }
@@ -3330,21 +3311,30 @@ public class CleanerScreen extends Screen {
         gg.fill(x + 8, y + 19, x + w - 8, y + 20, COLOR_EDGE);
 
         // ① 分页懒布局（★JEI 自带时要明说，不然用户以为我们没做）
-        boolean lazyBuiltin = LazyPages.builtin();
-        boolean lazyOk = !lazyBuiltin && LazyPages.supported();
+        RecipeViewerBackend cur = backend();
+        boolean jeiBackend = cur != null && "jei".equals(cur.id());
+        boolean lazyBuiltin = jeiBackend && LazyPages.builtin();
+        boolean lazyOk = jeiBackend && !lazyBuiltin && LazyPages.supported();
         boolean lazyOn = lazyOk && ClientSettings.lazyPages;
         boolean lazyHover = inRect((int) mouseX, (int) mouseY, x + 8, y + 26, w - 16, 16);
         if (lazyHover && lazyOk) gg.fill(x + 8, y + 26, x + w - 8, y + 42, COLOR_HOVER);
         gg.drawString(this.font, "分页懒布局", x + 12, y + 29,
-                lazyBuiltin ? COLOR_DIM : (lazyOk ? COLOR_TEXT : COLOR_FAINT), false);
-        if (lazyBuiltin) {
+                !jeiBackend ? COLOR_FAINT : (lazyBuiltin ? COLOR_DIM : (lazyOk ? COLOR_TEXT : COLOR_FAINT)), false);
+        if (!jeiBackend) {
+            String tag = "仅 JEI";
+            gg.drawString(this.font, "§8" + tag, x + w - 8 - this.font.width(tag), y + 29, COLOR_FAINT, false);
+        } else if (lazyBuiltin) {
             String tag = "JEI 自带";
             gg.drawString(this.font, "§a" + tag, x + w - 8 - this.font.width(tag), y + 29, COLOR_OK, false);
         } else {
             gg.drawString(this.font, lazyOn ? "●" : "○", x + w - 26, y + 29,
                     lazyOn ? COLOR_OK : COLOR_DOT_OFF, false);
         }
-        if (lazyBuiltin) {
+        if (!jeiBackend) {
+            gg.drawString(this.font, trim("§8当前 " + (cur == null ? "后端" : cur.label())
+                    + " 的配方页由它自己管理", w - 20), x + 12, y + 48, COLOR_FAINT, false);
+            gg.drawString(this.font, "§8这个开关只对 JEI 生效", x + 12, y + 58, COLOR_FAINT, false);
+        } else if (lazyBuiltin) {
             gg.drawString(this.font, "§a当前 JEI 自己按页懒建布局", x + 12, y + 48, COLOR_OK, false);
             gg.drawString(this.font, "§8本模组的补丁不启用（避免重复包一层）", x + 12, y + 58, COLOR_FAINT, false);
         } else if (lazyOk) {
@@ -3500,6 +3490,11 @@ public class CleanerScreen extends Screen {
             return true;
         }
         if (mouseX >= x + 8 && mouseX <= x + w - 8 && mouseY >= y + 26 && mouseY < y + 42) {
+            RecipeViewerBackend cb = backend();
+            if (cb != null && !"jei".equals(cb.id())) {
+                setStatus("分页懒布局只对 JEI 生效（当前 " + cb.label() + " 自己管理配方页）");
+                return true;
+            }
             if (LazyPages.builtin()) {
                 setStatus("当前 JEI（" + LazyPages.jeiVersion() + "）自带按页懒布局，无需开启");
                 return true;
@@ -3751,37 +3746,22 @@ public class CleanerScreen extends Screen {
     }
 
     private List<CatalystEntry> catalysts() {
-        IJeiRuntime runtime = Cleaner.RUNTIME;
-        if (runtime == null) return List.of();
-        if (catalystCache != null && catalystCacheKey == runtime) return catalystCache;
+        RecipeViewerBackend backend = Backends.primary();
+        if (backend == null || !backend.ready()) return List.of();
+        if (catalystCache != null && catalystCacheKey == backend) return catalystCache;
 
-        Map<Item, java.util.LinkedHashSet<String>> map = new java.util.LinkedHashMap<>();
+        List<CatalystEntry> list = new ArrayList<>();
         try {
-            var manager = runtime.getRecipeManager();
-            List<IRecipeCategory<?>> categories = manager.createRecipeCategoryLookup().get().toList();
-            for (IRecipeCategory<?> category : categories) {
-                var type = category.getRecipeType();
-                try {
-                    manager.createRecipeCatalystLookup(type).getItemStack().forEach(stack -> {
-                        if (stack == null || stack.isEmpty()) return;
-                        map.computeIfAbsent(stack.getItem(), k -> new java.util.LinkedHashSet<>())
-                                .add(type.getUid().toString());
-                    });
-                } catch (Throwable ignored) {
-                }
+            for (RecipeViewerBackend.Catalyst c : backend.catalysts()) {
+                if (c.stack() == null || c.stack().isEmpty()) continue;
+                list.add(new CatalystEntry(c.stack(), c.name(), c.typeUids()));
             }
         } catch (Throwable t) {
             return List.of();
         }
-
-        List<CatalystEntry> list = new ArrayList<>();
-        for (Map.Entry<Item, java.util.LinkedHashSet<String>> e : map.entrySet()) {
-            ItemStack stack = new ItemStack(e.getKey());
-            list.add(new CatalystEntry(stack, stack.getHoverName().getString(), String.join(",", e.getValue())));
-        }
         list.sort(Comparator.comparing(CatalystEntry::name));
         catalystCache = list;
-        catalystCacheKey = runtime;
+        catalystCacheKey = backend;
         return list;
     }
 
@@ -3856,7 +3836,7 @@ public class CleanerScreen extends Screen {
         if (typeScroll < 0) typeScroll = 0;
 
         if (pickerMode == 1 && rows.size() <= 1) {
-            gg.drawString(this.font, "§8需要 JEI 就绪并进入世界", x + 8, y + 44, COLOR_DIM, false);
+            gg.drawString(this.font, "§8需要配方浏览器就绪并进入世界", x + 8, y + 44, COLOR_DIM, false);
             return;
         }
         if (rows.isEmpty()) {

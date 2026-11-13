@@ -1,6 +1,5 @@
 package com.yuneko.foliocleaner.client;
 
-import com.yuneko.foliocleaner.Cleaner;
 import com.yuneko.foliocleaner.ClientSettings;
 import com.yuneko.foliocleaner.FolioCleaner;
 import com.yuneko.foliocleaner.Rules;
@@ -10,7 +9,6 @@ import net.minecraftforge.client.event.RecipesUpdatedEvent;
 import net.minecraftforge.client.event.RegisterClientCommandsEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
 
 /**
@@ -27,26 +25,16 @@ public final class ClientEvents {
     private ClientEvents() {
     }
 
-    private static boolean jeiLoaded() {
-        return ModList.get().isLoaded("jei");
+    /** 至少装了一个配方浏览器 —— 界面/引擎才有意义 */
+    private static boolean viewerAvailable() {
+        return com.yuneko.foliocleaner.viewer.Backends.any();
     }
 
     @SubscribeEvent
     public static void onClientTick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
-        if (!jeiLoaded()) return;
 
-        int revision = Rules.revision();
-        if (revision != seenRevision) {
-            seenRevision = revision;
-            // 默认不同步：改完规则要点「同步」按钮才生效。
-            // 打开「优化设置 → 自动同步」才会在这里自动重算（延后 8 tick，连续编辑只扫一次）。
-            if (ClientSettings.autoSync) {
-                Cleaner.requestApplyDelayed(8);
-            }
-        }
-
-        // 调试面板快捷键（默认 F7，可在按键设置里改）
+        // 调试面板快捷键（默认 F7）**放在 JEI 检查之前**：没有 JEI 也要能调出来看槽位
         try {
             while (KeyBinds.DEBUG.consumeClick()) {
                 DebugPanel.toggle();
@@ -54,10 +42,22 @@ public final class ClientEvents {
         } catch (Throwable ignored) {
         }
 
+        if (!viewerAvailable()) return;
+
+        int revision = Rules.revision();
+        if (revision != seenRevision) {
+            seenRevision = revision;
+            // 默认不同步：改完规则要点「同步」按钮才生效。
+            // 打开「优化设置 → 自动同步」才会在这里自动重算（延后 8 tick，连续编辑只扫一次）。
+            if (ClientSettings.autoSync) {
+                com.yuneko.foliocleaner.viewer.Backends.requestApplyDelayed(8);
+            }
+        }
+
         try {
-            Cleaner.tick();
-        } catch (NoClassDefFoundError ignored) {
-            // JEI 在半路被卸载 / 类不可用，静默跳过
+            com.yuneko.foliocleaner.viewer.Backends.tickAll();
+        } catch (Throwable ignored) {
+            // 某个后端在半路不可用，静默跳过（每个后端自己也有 try/catch）
         }
     }
 
@@ -66,10 +66,11 @@ public final class ClientEvents {
     public static void onRecipesUpdated(RecipesUpdatedEvent event) {
         // REI 的可见性谓词列表会随资源重载重建 —— 每次都得重新确认挂上了
         com.yuneko.foliocleaner.viewer.ReiRecipeHider.install();
-        if (!jeiLoaded()) return;
         com.yuneko.foliocleaner.ItemStats.invalidate();
         com.yuneko.foliocleaner.DuplicateGroups.invalidate();
-        Cleaner.requestApplyDelayed(4);
+        com.yuneko.foliocleaner.viewer.Backends.invalidateAll();
+        if (!viewerAvailable()) return;
+        com.yuneko.foliocleaner.viewer.Backends.requestApplyDelayed(4);
     }
 
     @SubscribeEvent
@@ -83,9 +84,9 @@ public final class ClientEvents {
             com.yuneko.foliocleaner.compat.DeclarativeGuards.reload();
         } catch (Throwable ignored) {
         }
-        if (!jeiLoaded()) return;
         com.yuneko.foliocleaner.DuplicateGroups.invalidate();
-        Cleaner.requestApplyDelayed(4);
+        if (!viewerAvailable()) return;
+        com.yuneko.foliocleaner.viewer.Backends.requestApplyDelayed(4);
     }
 
     /**
@@ -130,7 +131,15 @@ public final class ClientEvents {
     /** 同步进度条：屏幕上方居中，不影响游戏操作 */
     @SubscribeEvent
     public static void onRenderGui(net.minecraftforge.client.event.RenderGuiEvent.Post event) {
-        float progress = Cleaner.progress();
+        // ★进度条只问后端注册表：它内部对每个后端都 try/catch，
+        //   所以「没装某个 viewer」不会让这里抛 NoClassDefFoundError（test53 的崩溃就是这么来的）
+        if (!viewerAvailable()) return;
+        float progress;
+        try {
+            progress = com.yuneko.foliocleaner.viewer.Backends.progress();
+        } catch (Throwable t) {
+            return;
+        }
         if (progress < 0f) return;
 
         try {
@@ -157,13 +166,12 @@ public final class ClientEvents {
 
     @SubscribeEvent
     public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
-        // 没装 JEI 时连指令都不注册：Cleaner / CleanerCommands 里引用了 JEI 的类型，
-        // 提前返回可以避免类加载失败。
-        if (!jeiLoaded()) return;
+        // 装了任意一个配方浏览器就注册；没有的话 /foliocleaner viewers 也没意义
+        if (!viewerAvailable()) return;
         try {
             CleanerCommands.register(event.getDispatcher());
-        } catch (NoClassDefFoundError ignored) {
-            // JEI 类不可用，直接跳过
+        } catch (Throwable ignored) {
+            // 后端类不可用，直接跳过
         }
     }
 }
